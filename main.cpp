@@ -2,6 +2,22 @@
 #include <windows.h>
 #include <winuser.h>
 
+bool IsWindowManagable(HWND hwnd) {
+  LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+
+  if ((style & WS_THICKFRAME) == 0)
+    return false;
+
+  if (exStyle & WS_EX_TOOLWINDOW)
+    return false;
+
+  if (exStyle & WS_EX_NOACTIVATE)
+    return false;
+
+  return true;
+}
+
 bool IsRealTopLevelAppWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd))
     return false;
@@ -12,13 +28,7 @@ bool IsRealTopLevelAppWindow(HWND hwnd) {
   if (GetWindow(hwnd, GW_OWNER) != NULL)
     return false;
 
-  LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-  LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-
-  if (exStyle & WS_EX_TOOLWINDOW)
-    return false;
-
-  if (exStyle & WS_EX_NOACTIVATE)
+  if (!IsWindowManagable(hwnd))
     return false;
 
   return true;
