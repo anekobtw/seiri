@@ -1,6 +1,7 @@
+#include "layout.h"
 #include <iostream>
+#include <vector>
 #include <windows.h>
-#include <winuser.h>
 
 bool IsWindowManagable(HWND hwnd) {
   LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
@@ -18,7 +19,7 @@ bool IsWindowManagable(HWND hwnd) {
   return true;
 }
 
-bool IsRealTopLevelAppWindow(HWND hwnd) {
+bool IsWMWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd))
     return false;
 
@@ -28,10 +29,50 @@ bool IsRealTopLevelAppWindow(HWND hwnd) {
   if (GetWindow(hwnd, GW_OWNER) != NULL)
     return false;
 
+  if (IsIconic(hwnd) || IsZoomed(hwnd))
+    return false;
+
   if (!IsWindowManagable(hwnd))
     return false;
 
   return true;
+}
+
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+  auto *windows = reinterpret_cast<std::vector<HWND> *>(lParam);
+  if (IsWMWindow(hwnd))
+    windows->push_back(hwnd);
+  return TRUE;
+}
+
+void RecalculateAndApplyLayout() {
+  std::vector<HWND> windows;
+  EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&windows));
+
+  auto layout = calculateWindowResolution(windows);
+  int moved = 0;
+
+  for (const auto &item : layout) {
+    RECT current{};
+    if (!GetWindowRect(item.hwnd, &current))
+      continue;
+
+    if (current.left == item.rect.left && current.top == item.rect.top &&
+        current.right == item.rect.right && current.bottom == item.rect.bottom) {
+      continue;
+    }
+
+    int width = item.rect.right - item.rect.left;
+    int height = item.rect.bottom - item.rect.top;
+
+    if (SetWindowPos(item.hwnd, nullptr, item.rect.left, item.rect.top, width,
+                     height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING)) {
+      ++moved;
+    }
+  }
+
+  std::wcout << L"Layout computed for " << layout.size() << L" window(s), moved "
+             << moved << L"." << std::endl;
 }
 
 void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
@@ -42,7 +83,7 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
     return;
 
-  if (!IsRealTopLevelAppWindow(hwnd))
+  if (!IsWMWindow(hwnd))
     return;
 
   wchar_t title[256] = {0};
@@ -50,6 +91,8 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
 
   std::wcout << L"Window shown: hwnd=" << hwnd << L", title='" << title << L"'"
              << std::endl;
+
+  RecalculateAndApplyLayout();
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
