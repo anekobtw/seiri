@@ -1,24 +1,14 @@
 #include "alt_resize.h"
 
-#include <algorithm>
-
 namespace {
 
-constexpr int kMinResizeWidth = 140;
-constexpr int kMinResizeHeight = 100;
-
-HHOOK g_mouseHook = nullptr;
-bool g_isResizing = false;
-HWND g_targetHwnd = nullptr;
-POINT g_startCursor{};
-RECT g_startRect{};
+HHOOK g_keyboardHook = nullptr;
 AltResizeWindowFilterFn g_filter = nullptr;
 AltResizeCommitFn g_onCommit = nullptr;
+DWORD g_lastAltTapTick = 0;
+bool g_altDown = false;
 
-inline bool IsAltDown() { return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
-inline bool IsLeftDown() {
-  return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-}
+constexpr DWORD kAltDoubleTapMs = 350;
 
 bool IsCandidateWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd))
@@ -36,87 +26,83 @@ bool IsCandidateWindow(HWND hwnd) {
   return !g_filter || g_filter(hwnd);
 }
 
-void StopResize(bool notifyCommit) {
-  if (!g_isResizing) return;
-  const HWND hwnd = g_targetHwnd;
-  g_isResizing = false;
-  g_targetHwnd = nullptr;
+HWND ResolveTargetWindow() {
+  const HWND hwnd = GetAncestor(GetForegroundWindow(), GA_ROOT);
+  return IsCandidateWindow(hwnd) ? hwnd : nullptr;
+}
 
-  if (!notifyCommit || !g_onCommit || !hwnd || !IsWindow(hwnd)) return;
+void CommitRect(HWND hwnd) {
+  if (!g_onCommit || !hwnd || !IsWindow(hwnd)) return;
   RECT rect{};
   if (GetWindowRect(hwnd, &rect)) g_onCommit(hwnd, rect);
 }
 
-void ApplyResizeFromCursor() {
-  if (!g_isResizing || !g_targetHwnd || !IsWindow(g_targetHwnd))
-    return StopResize(false);
+void TryHandleAltTap() {
+  const DWORD now = GetTickCount();
+  const DWORD elapsed = now - g_lastAltTapTick;
+  g_lastAltTapTick = now;
 
-  POINT cursor{};
-  if (!GetCursorPos(&cursor)) return;
+  if (elapsed > kAltDoubleTapMs) return;
 
-  const int w = std::max(kMinResizeWidth,
-                         static_cast<int>(g_startRect.right - g_startRect.left +
-                                          (cursor.x - g_startCursor.x)));
-  const int h = std::max(kMinResizeHeight,
-                         static_cast<int>(g_startRect.bottom - g_startRect.top +
-                                          (cursor.y - g_startCursor.y)));
+  const HWND hwnd = ResolveTargetWindow();
+  if (!hwnd) return;
 
-  SetWindowPos(g_targetHwnd, nullptr, g_startRect.left, g_startRect.top, w, h,
-               SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+  CommitRect(hwnd);
 }
 
-LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam,
+                                      LPARAM lParam) {
   if (nCode < 0 || !lParam)
-    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+    return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 
-  const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+  const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+  if (key->vkCode != VK_MENU && key->vkCode != VK_LMENU &&
+      key->vkCode != VK_RMENU) {
+    return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+  }
 
-  if (wParam == WM_LBUTTONDOWN && !g_isResizing && IsAltDown()) {
-    const HWND hwnd = GetAncestor(WindowFromPoint(mouse->pt), GA_ROOT);
-    if (IsCandidateWindow(hwnd) && GetWindowRect(hwnd, &g_startRect)) {
-      g_targetHwnd = hwnd;
-      g_startCursor = mouse->pt;
-      g_isResizing = true;
-      return 1;
+  if ((key->flags & LLKHF_UP) == 0) {
+    if (!g_altDown &&
+        (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+      g_altDown = true;
+      TryHandleAltTap();
     }
+  } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+    g_altDown = false;
   }
 
-  if (!g_isResizing) return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
-
-  if (!IsAltDown() || !IsLeftDown()) {
-    StopResize(true);
-  } else if (wParam == WM_MOUSEMOVE) {
-    ApplyResizeFromCursor();
-  } else if (wParam == WM_LBUTTONUP) {
-    StopResize(true);
-  }
-
-  return 1;
+  return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 }
 
 }  // namespace
 
 bool InstallAltResizeHook(AltResizeWindowFilterFn filter,
                           AltResizeCommitFn onCommit) {
-  if (g_mouseHook) return true;
+  if (g_keyboardHook) return true;
 
   g_filter = filter;
   g_onCommit = onCommit;
-  g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc,
-                                 GetModuleHandle(nullptr), 0);
+  g_keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+                                    GetModuleHandle(nullptr), 0);
 
-  if (g_mouseHook) return true;
+  if (g_keyboardHook) return true;
+
   g_filter = nullptr;
   g_onCommit = nullptr;
+  g_lastAltTapTick = 0;
+  g_altDown = false;
   return false;
 }
 
 void UninstallAltResizeHook() {
-  StopResize(false);
-  if (g_mouseHook) {
-    UnhookWindowsHookEx(g_mouseHook);
-    g_mouseHook = nullptr;
+  if (g_keyboardHook) {
+    UnhookWindowsHookEx(g_keyboardHook);
+    g_keyboardHook = nullptr;
   }
+
   g_filter = nullptr;
   g_onCommit = nullptr;
+  g_lastAltTapTick = 0;
+  g_altDown = false;
 }
