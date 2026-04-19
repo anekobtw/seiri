@@ -12,22 +12,19 @@ bool g_isResizing = false;
 HWND g_targetHwnd = nullptr;
 POINT g_startCursor{};
 RECT g_startRect{};
-
 AltResizeWindowFilterFn g_filter = nullptr;
 AltResizeCommitFn g_onCommit = nullptr;
 
-bool IsAltDown() { return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
-
-bool IsLeftDown() { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }
+inline bool IsAltDown() { return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
+inline bool IsLeftDown() {
+  return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+}
 
 bool IsCandidateWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd))
     return false;
-
   hwnd = GetAncestor(hwnd, GA_ROOT);
-  if (!hwnd) return false;
-
-  if (GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER))
+  if (!hwnd || GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER))
     return false;
 
   const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
@@ -36,44 +33,35 @@ bool IsCandidateWindow(HWND hwnd) {
       (exStyle & WS_EX_NOACTIVATE))
     return false;
 
-  if (g_filter && !g_filter(hwnd)) return false;
-  return true;
+  return !g_filter || g_filter(hwnd);
 }
 
 void StopResize(bool notifyCommit) {
   if (!g_isResizing) return;
-
-  HWND finalHwnd = g_targetHwnd;
+  const HWND hwnd = g_targetHwnd;
   g_isResizing = false;
   g_targetHwnd = nullptr;
 
-  if (!notifyCommit || !g_onCommit || !finalHwnd || !IsWindow(finalHwnd))
-    return;
-
-  RECT finalRect{};
-  if (GetWindowRect(finalHwnd, &finalRect)) g_onCommit(finalHwnd, finalRect);
+  if (!notifyCommit || !g_onCommit || !hwnd || !IsWindow(hwnd)) return;
+  RECT rect{};
+  if (GetWindowRect(hwnd, &rect)) g_onCommit(hwnd, rect);
 }
 
 void ApplyResizeFromCursor() {
-  if (!g_isResizing || !g_targetHwnd || !IsWindow(g_targetHwnd)) {
-    StopResize(false);
-    return;
-  }
+  if (!g_isResizing || !g_targetHwnd || !IsWindow(g_targetHwnd))
+    return StopResize(false);
 
   POINT cursor{};
   if (!GetCursorPos(&cursor)) return;
 
-  const int dx = cursor.x - g_startCursor.x;
-  const int dy = cursor.y - g_startCursor.y;
+  const int w = std::max(kMinResizeWidth,
+                         static_cast<int>(g_startRect.right - g_startRect.left +
+                                          (cursor.x - g_startCursor.x)));
+  const int h = std::max(kMinResizeHeight,
+                         static_cast<int>(g_startRect.bottom - g_startRect.top +
+                                          (cursor.y - g_startCursor.y)));
 
-  const int startWidth = g_startRect.right - g_startRect.left;
-  const int startHeight = g_startRect.bottom - g_startRect.top;
-
-  const int targetWidth = std::max(kMinResizeWidth, startWidth + dx);
-  const int targetHeight = std::max(kMinResizeHeight, startHeight + dy);
-
-  SetWindowPos(g_targetHwnd, nullptr, g_startRect.left, g_startRect.top,
-               targetWidth, targetHeight,
+  SetWindowPos(g_targetHwnd, nullptr, g_startRect.left, g_startRect.top, w, h,
                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
 }
 
@@ -84,9 +72,7 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
   const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
 
   if (wParam == WM_LBUTTONDOWN && !g_isResizing && IsAltDown()) {
-    HWND hwnd = WindowFromPoint(mouse->pt);
-    hwnd = GetAncestor(hwnd, GA_ROOT);
-
+    const HWND hwnd = GetAncestor(WindowFromPoint(mouse->pt), GA_ROOT);
     if (IsCandidateWindow(hwnd) && GetWindowRect(hwnd, &g_startRect)) {
       g_targetHwnd = hwnd;
       g_startCursor = mouse->pt;
@@ -99,17 +85,10 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
   if (!IsAltDown() || !IsLeftDown()) {
     StopResize(true);
-    return 1;
-  }
-
-  if (wParam == WM_MOUSEMOVE) {
+  } else if (wParam == WM_MOUSEMOVE) {
     ApplyResizeFromCursor();
-    return 1;
-  }
-
-  if (wParam == WM_LBUTTONUP) {
+  } else if (wParam == WM_LBUTTONUP) {
     StopResize(true);
-    return 1;
   }
 
   return 1;
@@ -123,27 +102,21 @@ bool InstallAltResizeHook(AltResizeWindowFilterFn filter,
 
   g_filter = filter;
   g_onCommit = onCommit;
-
   g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc,
                                  GetModuleHandle(nullptr), 0);
 
-  if (!g_mouseHook) {
-    g_filter = nullptr;
-    g_onCommit = nullptr;
-    return false;
-  }
-
-  return true;
+  if (g_mouseHook) return true;
+  g_filter = nullptr;
+  g_onCommit = nullptr;
+  return false;
 }
 
 void UninstallAltResizeHook() {
   StopResize(false);
-
   if (g_mouseHook) {
     UnhookWindowsHookEx(g_mouseHook);
     g_mouseHook = nullptr;
   }
-
   g_filter = nullptr;
   g_onCommit = nullptr;
 }

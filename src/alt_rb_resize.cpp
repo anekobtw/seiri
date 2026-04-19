@@ -35,44 +35,34 @@ POINT g_startCursor{};
 RECT g_startRect{};
 unsigned g_activeEdges = kEdgeNone;
 
-bool IsAltDown() { return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
-
-bool IsLeftMouseDown() { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }
-
-int Width(const RECT& r) { return r.right - r.left; }
-
-int Height(const RECT& r) { return r.bottom - r.top; }
+inline bool IsAltDown() { return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
+inline bool IsLeftMouseDown() {
+  return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+}
+inline int Width(const RECT& r) { return r.right - r.left; }
+inline int Height(const RECT& r) { return r.bottom - r.top; }
 
 bool IsEligibleTopLevelWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd))
     return false;
-
   hwnd = GetAncestor(hwnd, GA_ROOT);
-  if (!hwnd) return false;
-
-  if (GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER))
+  if (!hwnd || GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER))
     return false;
 
   const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
   const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-
   if (!(style & WS_THICKFRAME) || (exStyle & WS_EX_TOOLWINDOW) ||
-      (exStyle & WS_EX_NOACTIVATE)) {
+      (exStyle & WS_EX_NOACTIVATE))
     return false;
-  }
 
-  if (g_filter && !g_filter(hwnd)) return false;
-  return true;
+  return !g_filter || g_filter(hwnd);
 }
 
 unsigned ResolveEdgesForStartPoint(const RECT& rect, const POINT& cursor) {
-  const int centerX = rect.left + Width(rect) / 2;
-  const int centerY = rect.top + Height(rect) / 2;
-
-  unsigned edges = kEdgeNone;
-  edges |= (cursor.x < centerX) ? kEdgeLeft : kEdgeRight;
-  edges |= (cursor.y < centerY) ? kEdgeTop : kEdgeBottom;
-  return edges;
+  const int cx = rect.left + Width(rect) / 2;
+  const int cy = rect.top + Height(rect) / 2;
+  return (cursor.x < cx ? kEdgeLeft : kEdgeRight) |
+         (cursor.y < cy ? kEdgeTop : kEdgeBottom);
 }
 
 RECT ComputeResizedRect(const RECT& startRect, const POINT& startCursor,
@@ -81,34 +71,18 @@ RECT ComputeResizedRect(const RECT& startRect, const POINT& startCursor,
   const int dx = currentCursor.x - startCursor.x;
   const int dy = currentCursor.y - startCursor.y;
 
-  if (edges & kEdgeLeft) {
-    out.left = startRect.left + dx;
-  }
-  if (edges & kEdgeRight) {
-    out.right = startRect.right + dx;
-  }
-  if (edges & kEdgeTop) {
-    out.top = startRect.top + dy;
-  }
-  if (edges & kEdgeBottom) {
-    out.bottom = startRect.bottom + dy;
-  }
+  if (edges & kEdgeLeft) out.left = startRect.left + dx;
+  if (edges & kEdgeRight) out.right = startRect.right + dx;
+  if (edges & kEdgeTop) out.top = startRect.top + dy;
+  if (edges & kEdgeBottom) out.bottom = startRect.bottom + dy;
 
-  if (Width(out) < kMinWindowWidth) {
-    if (edges & kEdgeLeft) {
-      out.left = out.right - kMinWindowWidth;
-    } else {
-      out.right = out.left + kMinWindowWidth;
-    }
-  }
+  if (Width(out) < kMinWindowWidth)
+    (edges & kEdgeLeft) ? out.left = out.right - kMinWindowWidth
+                        : out.right = out.left + kMinWindowWidth;
 
-  if (Height(out) < kMinWindowHeight) {
-    if (edges & kEdgeTop) {
-      out.top = out.bottom - kMinWindowHeight;
-    } else {
-      out.bottom = out.top + kMinWindowHeight;
-    }
-  }
+  if (Height(out) < kMinWindowHeight)
+    (edges & kEdgeTop) ? out.top = out.bottom - kMinWindowHeight
+                       : out.bottom = out.top + kMinWindowHeight;
 
   return out;
 }
@@ -116,23 +90,19 @@ RECT ComputeResizedRect(const RECT& startRect, const POINT& startCursor,
 void EndResize(bool notifyCommit) {
   if (!g_isResizing) return;
 
-  HWND hwnd = g_targetHwnd;
-
+  const HWND hwnd = g_targetHwnd;
   g_isResizing = false;
   g_targetHwnd = nullptr;
   g_activeEdges = kEdgeNone;
 
   if (!notifyCommit || !g_onCommit || !hwnd || !IsWindow(hwnd)) return;
-
   RECT finalRect{};
   if (GetWindowRect(hwnd, &finalRect)) g_onCommit(hwnd, finalRect);
 }
 
 void UpdateResizeFromCursor(const POINT& cursor) {
-  if (!g_isResizing || !g_targetHwnd || !IsWindow(g_targetHwnd)) {
-    EndResize(false);
-    return;
-  }
+  if (!g_isResizing || !g_targetHwnd || !IsWindow(g_targetHwnd))
+    return EndResize(false);
 
   const RECT nextRect =
       ComputeResizedRect(g_startRect, g_startCursor, cursor, g_activeEdges);
@@ -150,9 +120,7 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
   const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
 
   if (wParam == WM_LBUTTONDOWN && !g_isResizing && IsAltDown()) {
-    HWND hwnd = WindowFromPoint(info->pt);
-    hwnd = GetAncestor(hwnd, GA_ROOT);
-
+    const HWND hwnd = GetAncestor(WindowFromPoint(info->pt), GA_ROOT);
     RECT rect{};
     if (IsEligibleTopLevelWindow(hwnd) && GetWindowRect(hwnd, &rect)) {
       g_isResizing = true;
@@ -168,17 +136,10 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
 
   if (!IsAltDown() || !IsLeftMouseDown()) {
     EndResize(true);
-    return 1;
-  }
-
-  if (wParam == WM_MOUSEMOVE) {
+  } else if (wParam == WM_MOUSEMOVE) {
     UpdateResizeFromCursor(info->pt);
-    return 1;
-  }
-
-  if (wParam == WM_LBUTTONUP) {
+  } else if (wParam == WM_LBUTTONUP) {
     EndResize(true);
-    return 1;
   }
 
   return 1;
@@ -192,27 +153,21 @@ bool InstallAltSnapResizeHook(AltSnapResizeWindowFilterFn filter,
 
   g_filter = filter;
   g_onCommit = onCommit;
-
   g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
                                   GetModuleHandleW(nullptr), 0);
 
-  if (!g_mouseHook) {
-    g_filter = nullptr;
-    g_onCommit = nullptr;
-    return false;
-  }
-
-  return true;
+  if (g_mouseHook) return true;
+  g_filter = nullptr;
+  g_onCommit = nullptr;
+  return false;
 }
 
 void UninstallAltSnapResizeHook() {
   EndResize(false);
-
   if (g_mouseHook) {
     UnhookWindowsHookEx(g_mouseHook);
     g_mouseHook = nullptr;
   }
-
   g_filter = nullptr;
   g_onCommit = nullptr;
 }
