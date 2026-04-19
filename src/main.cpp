@@ -5,6 +5,7 @@
 #include <iostream>
 #include <unordered_set>
 
+#include "alt_resize.h"
 #include "animations.h"
 #include "layout.h"
 
@@ -78,6 +79,15 @@ BOOL CALLBACK SyncManagedEnumProc(HWND hwnd, LPARAM lParam) {
   auto* out = reinterpret_cast<std::unordered_set<HWND>*>(lParam);
   if (out && IsWMWindow(hwnd)) out->insert(hwnd);
   return TRUE;
+}
+
+void OnAltResizeCommit(HWND hwnd, const RECT& rect) {
+  if (!IsWMWindow(hwnd)) return;
+
+  g_anchorHwnd = hwnd;
+  g_anchorRect = rect;
+  g_hasAnchorRect = true;
+  QueueRelayout();
 }
 
 void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
@@ -225,6 +235,19 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   }
 
   EnumWindows(SyncManagedEnumProc, reinterpret_cast<LPARAM>(&g_managedWindows));
+
+  if (!InstallAltResizeHook(IsWMWindow, OnAltResizeCommit)) {
+    UnhookWinEvent(showHook);
+    UnhookWinEvent(hideHook);
+    UnhookWinEvent(destroyHook);
+    UnhookWinEvent(moveSizeStartHook);
+    UnhookWinEvent(moveSizeEndHook);
+    UnhookWinEvent(minimizeStartHook);
+    UnhookWinEvent(minimizeEndHook);
+    UnhookWinEvent(stateChangeHook);
+    return 1;
+  }
+
   QueueRelayout();
 
   MSG msg;
@@ -314,6 +337,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     TranslateMessage(&msg);
     DispatchMessage(&msg);
   }
+
+  UninstallAltResizeHook();
 
   UnhookWinEvent(showHook);
   UnhookWinEvent(hideHook);
