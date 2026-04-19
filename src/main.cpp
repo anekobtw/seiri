@@ -9,6 +9,9 @@
 #include "animations.h"
 #include "layout.h"
 
+void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD,
+                               DWORD);
+
 namespace {
 
 constexpr UINT kRelayoutMessage = WM_APP + 1;
@@ -30,6 +33,68 @@ HWND g_pendingOpenHwnd = nullptr;
 RECT g_pendingOpenTargetRect{};
 bool g_hasPendingOpenTargetRect = false;
 bool g_pendingOpenStage = false;
+
+struct HookSet {
+  HWINEVENTHOOK show = nullptr;
+  HWINEVENTHOOK hide = nullptr;
+  HWINEVENTHOOK destroy = nullptr;
+  HWINEVENTHOOK moveSizeStart = nullptr;
+  HWINEVENTHOOK moveSizeEnd = nullptr;
+  HWINEVENTHOOK minimizeStart = nullptr;
+  HWINEVENTHOOK minimizeEnd = nullptr;
+  HWINEVENTHOOK stateChange = nullptr;
+};
+
+inline void ClearAnchor() {
+  g_anchorHwnd = nullptr;
+  g_hasAnchorRect = false;
+}
+
+void UnhookAll(const HookSet& hooks) {
+  if (hooks.show) UnhookWinEvent(hooks.show);
+  if (hooks.hide) UnhookWinEvent(hooks.hide);
+  if (hooks.destroy) UnhookWinEvent(hooks.destroy);
+  if (hooks.moveSizeStart) UnhookWinEvent(hooks.moveSizeStart);
+  if (hooks.moveSizeEnd) UnhookWinEvent(hooks.moveSizeEnd);
+  if (hooks.minimizeStart) UnhookWinEvent(hooks.minimizeStart);
+  if (hooks.minimizeEnd) UnhookWinEvent(hooks.minimizeEnd);
+  if (hooks.stateChange) UnhookWinEvent(hooks.stateChange);
+}
+
+bool InstallHooks(DWORD hookFlags, HookSet* out) {
+  if (!out) return false;
+
+  out->show = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr,
+                              WinEventHookProc, 0, 0, hookFlags);
+  out->hide = SetWinEventHook(EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE, nullptr,
+                              WinEventHookProc, 0, 0, hookFlags);
+  out->destroy =
+      SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr,
+                      WinEventHookProc, 0, 0, hookFlags);
+  out->moveSizeStart = SetWinEventHook(
+      EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART, nullptr,
+      WinEventHookProc, 0, 0, hookFlags);
+  out->moveSizeEnd = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND,
+                                     EVENT_SYSTEM_MOVESIZEEND, nullptr,
+                                     WinEventHookProc, 0, 0, hookFlags);
+  out->minimizeStart = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,
+                                       EVENT_SYSTEM_MINIMIZESTART, nullptr,
+                                       WinEventHookProc, 0, 0, hookFlags);
+  out->minimizeEnd = SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND,
+                                     EVENT_SYSTEM_MINIMIZEEND, nullptr,
+                                     WinEventHookProc, 0, 0, hookFlags);
+  out->stateChange = SetWinEventHook(EVENT_OBJECT_STATECHANGE,
+                                     EVENT_OBJECT_STATECHANGE, nullptr,
+                                     WinEventHookProc, 0, 0, hookFlags);
+
+  const bool ok = out->show && out->hide && out->destroy && out->moveSizeStart &&
+                  out->moveSizeEnd && out->minimizeStart && out->minimizeEnd &&
+                  out->stateChange;
+  if (ok) return true;
+  UnhookAll(*out);
+  *out = {};
+  return false;
+}
 
 }  // namespace
 
@@ -68,11 +133,9 @@ bool IsWMWindow(HWND hwnd) {
 
 void QueueRelayout() {
   if (g_isRelayoutQueued) return;
-
   g_isRelayoutQueued = true;
-  if (!PostThreadMessage(GetCurrentThreadId(), kRelayoutMessage, 0, 0)) {
+  if (!PostThreadMessage(GetCurrentThreadId(), kRelayoutMessage, 0, 0))
     g_isRelayoutQueued = false;
-  }
 }
 
 BOOL CALLBACK SyncManagedEnumProc(HWND hwnd, LPARAM lParam) {
@@ -83,7 +146,6 @@ BOOL CALLBACK SyncManagedEnumProc(HWND hwnd, LPARAM lParam) {
 
 void OnAltResizeCommit(HWND hwnd, const RECT& rect) {
   if (!IsWMWindow(hwnd)) return;
-
   g_anchorHwnd = hwnd;
   g_anchorRect = rect;
   g_hasAnchorRect = true;
@@ -119,10 +181,7 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
 
   if (event == EVENT_SYSTEM_MINIMIZESTART ||
       event == EVENT_SYSTEM_MINIMIZEEND) {
-    if (hwnd == g_anchorHwnd) {
-      g_anchorHwnd = nullptr;
-      g_hasAnchorRect = false;
-    }
+    if (hwnd == g_anchorHwnd) ClearAnchor();
     QueueRelayout();
     return;
   }
@@ -130,15 +189,12 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
 
   if (event == EVENT_OBJECT_STATECHANGE) {
-    const bool managedBefore =
-        g_managedWindows.find(hwnd) != g_managedWindows.end();
+    const bool managedBefore = g_managedWindows.find(hwnd) != g_managedWindows.end();
     const bool managedNow = IsWMWindow(hwnd);
-
-    if (managedNow) {
+    if (managedNow)
       g_managedWindows.insert(hwnd);
-    } else {
+    else
       g_managedWindows.erase(hwnd);
-    }
 
     if (managedBefore || managedNow) QueueRelayout();
     return;
@@ -161,10 +217,7 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   }
 
   if (event == EVENT_OBJECT_DESTROY || event == EVENT_OBJECT_HIDE) {
-    if (hwnd == g_anchorHwnd) {
-      g_anchorHwnd = nullptr;
-      g_hasAnchorRect = false;
-    }
+    if (hwnd == g_anchorHwnd) ClearAnchor();
 
     if (hwnd == g_moveSizeHwnd) {
       g_moveSizeHwnd = nullptr;
@@ -188,63 +241,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
   const DWORD hookFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
 
-  HWINEVENTHOOK showHook =
-      SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr,
-                      WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK hideHook =
-      SetWinEventHook(EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE, nullptr,
-                      WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK destroyHook =
-      SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr,
-                      WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK moveSizeStartHook =
-      SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART,
-                      nullptr, WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK moveSizeEndHook =
-      SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND,
-                      nullptr, WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK minimizeStartHook =
-      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART,
-                      nullptr, WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK minimizeEndHook =
-      SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND,
-                      nullptr, WinEventHookProc, 0, 0, hookFlags);
-
-  HWINEVENTHOOK stateChangeHook =
-      SetWinEventHook(EVENT_OBJECT_STATECHANGE, EVENT_OBJECT_STATECHANGE,
-                      nullptr, WinEventHookProc, 0, 0, hookFlags);
-
-  if (!showHook || !hideHook || !destroyHook || !moveSizeStartHook ||
-      !moveSizeEndHook || !minimizeStartHook || !minimizeEndHook ||
-      !stateChangeHook) {
-    if (showHook) UnhookWinEvent(showHook);
-    if (hideHook) UnhookWinEvent(hideHook);
-    if (destroyHook) UnhookWinEvent(destroyHook);
-    if (moveSizeStartHook) UnhookWinEvent(moveSizeStartHook);
-    if (moveSizeEndHook) UnhookWinEvent(moveSizeEndHook);
-    if (minimizeStartHook) UnhookWinEvent(minimizeStartHook);
-    if (minimizeEndHook) UnhookWinEvent(minimizeEndHook);
-    if (stateChangeHook) UnhookWinEvent(stateChangeHook);
-    return 1;
-  }
+  HookSet hooks{};
+  if (!InstallHooks(hookFlags, &hooks)) return 1;
 
   EnumWindows(SyncManagedEnumProc, reinterpret_cast<LPARAM>(&g_managedWindows));
 
   if (!InstallAltResizeHook(IsWMWindow, OnAltResizeCommit)) {
-    UnhookWinEvent(showHook);
-    UnhookWinEvent(hideHook);
-    UnhookWinEvent(destroyHook);
-    UnhookWinEvent(moveSizeStartHook);
-    UnhookWinEvent(moveSizeEndHook);
-    UnhookWinEvent(minimizeStartHook);
-    UnhookWinEvent(minimizeEndHook);
-    UnhookWinEvent(stateChangeHook);
+    UnhookAll(hooks);
     return 1;
   }
 
@@ -254,7 +257,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   while (GetMessage(&msg, nullptr, 0, 0)) {
     if (msg.message == kRelayoutMessage) {
       g_isRelayoutQueued = false;
-
       if (g_isMoveSizeActive) continue;
 
       const DWORD now = GetTickCount();
@@ -267,13 +269,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
       if (g_hasAnchorRect && (!g_anchorHwnd || !IsWindow(g_anchorHwnd) ||
                               !IsWMWindow(g_anchorHwnd))) {
-        g_anchorHwnd = nullptr;
-        g_hasAnchorRect = false;
+        ClearAnchor();
       }
 
-      HWND anchor = g_hasAnchorRect ? g_anchorHwnd : nullptr;
+      const HWND anchor = g_hasAnchorRect ? g_anchorHwnd : nullptr;
       const RECT* anchorRect = g_hasAnchorRect ? &g_anchorRect : nullptr;
-      const bool usedAnchor = (anchor != nullptr && anchorRect != nullptr);
+      const bool usedAnchor = anchor && anchorRect;
 
       if (g_pendingOpenStage && g_pendingOpenHwnd &&
           g_managedWindows.find(g_pendingOpenHwnd) != g_managedWindows.end()) {
@@ -282,10 +283,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                                   kLayoutAnimationMs, g_pendingOpenHwnd,
                                   &target);
 
-        if (usedAnchor) {
-          g_anchorHwnd = nullptr;
-          g_hasAnchorRect = false;
-        }
+        if (usedAnchor) ClearAnchor();
 
         g_pendingOpenTargetRect = target;
         g_hasPendingOpenTargetRect = true;
@@ -296,11 +294,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
       RecalculateAndApplyLayout(IsWMWindow, anchor, anchorRect,
                                 kLayoutAnimationMs);
-
-      if (usedAnchor) {
-        g_anchorHwnd = nullptr;
-        g_hasAnchorRect = false;
-      }
+      if (usedAnchor) ClearAnchor();
       continue;
     }
 
@@ -339,14 +333,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   }
 
   UninstallAltResizeHook();
-
-  UnhookWinEvent(showHook);
-  UnhookWinEvent(hideHook);
-  UnhookWinEvent(destroyHook);
-  UnhookWinEvent(moveSizeStartHook);
-  UnhookWinEvent(moveSizeEndHook);
-  UnhookWinEvent(minimizeStartHook);
-  UnhookWinEvent(minimizeEndHook);
-  UnhookWinEvent(stateChangeHook);
+  UnhookAll(hooks);
   return 0;
 }

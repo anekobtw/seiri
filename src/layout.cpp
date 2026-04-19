@@ -28,59 +28,50 @@ struct EnumContext {
 
 bool g_isApplyingLayout = false;
 
-int Width(const RECT& rect) { return rect.right - rect.left; }
-int Height(const RECT& rect) { return rect.bottom - rect.top; }
-int Area(const RECT& rect) {
-  const int w = rect.right - rect.left, h = rect.bottom - rect.top;
+inline int Width(const RECT& rect) { return rect.right - rect.left; }
+inline int Height(const RECT& rect) { return rect.bottom - rect.top; }
+inline int Area(const RECT& rect) {
+  const int w = Width(rect), h = Height(rect);
   return (w > 0 && h > 0) ? w * h : 0;
 }
 
 RECT InsetRect(const RECT& rect, int inset) {
-  RECT result = rect;
-  result.left += inset;
-  result.top += inset;
-  result.right -= inset;
-  result.bottom -= inset;
-
-  if (result.right < result.left) result.right = result.left;
-  if (result.bottom < result.top) result.bottom = result.top;
-
-  return result;
+  RECT out{rect.left + inset, rect.top + inset, rect.right - inset,
+           rect.bottom - inset};
+  if (out.right < out.left) out.right = out.left;
+  if (out.bottom < out.top) out.bottom = out.top;
+  return out;
 }
 
 RECT SafeMonitorWorkArea(HMONITOR monitor) {
-  MONITORINFO monitorInfo{};
-  monitorInfo.cbSize = sizeof(monitorInfo);
-  if (monitor && GetMonitorInfo(monitor, &monitorInfo))
-    return monitorInfo.rcWork;
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (monitor && GetMonitorInfo(monitor, &info)) return info.rcWork;
   return {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 }
 
 void PushCell(std::vector<WindowRect>& out, HWND hwnd, const RECT& rect) {
-  RECT safeRect = rect;
-  if (safeRect.right < safeRect.left) safeRect.right = safeRect.left;
-  if (safeRect.bottom < safeRect.top) safeRect.bottom = safeRect.top;
-  out.push_back({hwnd, safeRect});
+  RECT safe = rect;
+  if (safe.right < safe.left) safe.right = safe.left;
+  if (safe.bottom < safe.top) safe.bottom = safe.top;
+  out.push_back({hwnd, safe});
 }
 
 void SplitVertical(const RECT& in, RECT& left, RECT& right) {
   const int totalWidth = Width(in);
   if (totalWidth <= 1) {
-    left = in;
-    right = in;
+    left = right = in;
     return;
   }
 
-  const int usableWidth = std::max(1, totalWidth - kInnerGap);
-  int leftWidth = static_cast<int>(usableWidth * kSplitRatio);
-  const int minWidth = std::max(kMinTileWidth, usableWidth / 4);
-
-  if (leftWidth < minWidth) leftWidth = minWidth;
-  if (leftWidth > usableWidth - minWidth) leftWidth = usableWidth - minWidth;
+  const int usable = std::max(1, totalWidth - kInnerGap);
+  const int minW = std::max(kMinTileWidth, usable / 4);
+  int leftW = static_cast<int>(usable * kSplitRatio);
+  if (leftW < minW) leftW = minW;
+  if (leftW > usable - minW) leftW = usable - minW;
 
   left = in;
-  left.right = left.left + leftWidth;
-
+  left.right = left.left + leftW;
   right = in;
   right.left = left.right + kInnerGap;
 }
@@ -88,22 +79,18 @@ void SplitVertical(const RECT& in, RECT& left, RECT& right) {
 void SplitHorizontal(const RECT& in, RECT& top, RECT& bottom) {
   const int totalHeight = Height(in);
   if (totalHeight <= 1) {
-    top = in;
-    bottom = in;
+    top = bottom = in;
     return;
   }
 
-  const int usableHeight = std::max(1, totalHeight - kInnerGap);
-  int topHeight = static_cast<int>(usableHeight * kSplitRatio);
-  const int minHeight = std::max(kMinTileHeight, usableHeight / 4);
-
-  if (topHeight < minHeight) topHeight = minHeight;
-  if (topHeight > usableHeight - minHeight)
-    topHeight = usableHeight - minHeight;
+  const int usable = std::max(1, totalHeight - kInnerGap);
+  const int minH = std::max(kMinTileHeight, usable / 4);
+  int topH = static_cast<int>(usable * kSplitRatio);
+  if (topH < minH) topH = minH;
+  if (topH > usable - minH) topH = usable - minH;
 
   top = in;
-  top.bottom = top.top + topHeight;
-
+  top.bottom = top.top + topH;
   bottom = in;
   bottom.top = top.bottom + kInnerGap;
 }
@@ -113,40 +100,27 @@ void LayoutDwindleInArea(std::vector<WindowRect>& out,
   if (windows.empty()) return;
 
   RECT remaining = area;
-  const int windowCount = static_cast<int>(windows.size());
-
-  if (windowCount == 1) {
-    PushCell(out, windows[0], remaining);
-    return;
-  }
+  const int count = static_cast<int>(windows.size());
+  if (count == 1) return PushCell(out, windows.front(), remaining);
 
   bool splitVertical = Width(remaining) >= Height(remaining);
-
-  for (int i = 0; i < windowCount - 1; ++i) {
+  for (int i = 0; i < count - 1; ++i) {
     RECT first{}, second{};
-
-    if (splitVertical) {
-      SplitVertical(remaining, first, second);
-    } else {
-      SplitHorizontal(remaining, first, second);
-    }
-
+    splitVertical ? SplitVertical(remaining, first, second)
+                  : SplitHorizontal(remaining, first, second);
     PushCell(out, windows[i], first);
     remaining = second;
     splitVertical = !splitVertical;
   }
 
-  PushCell(out, windows[windowCount - 1], remaining);
+  PushCell(out, windows[count - 1], remaining);
 }
 
 RECT ClampRectToArea(const RECT& rect, const RECT& area) {
   RECT out = rect;
 
-  int width = Width(out);
-  int height = Height(out);
-  if (width < kMinTileWidth) width = kMinTileWidth;
-  if (height < kMinTileHeight) height = kMinTileHeight;
-
+  int width = std::max(kMinTileWidth, Width(out));
+  int height = std::max(kMinTileHeight, Height(out));
   width = std::min(width, Width(area));
   height = std::min(height, Height(area));
 
@@ -160,7 +134,6 @@ RECT ClampRectToArea(const RECT& rect, const RECT& area) {
     out.right = area.right;
     out.left = out.right - width;
   }
-
   if (out.bottom > area.bottom) {
     out.bottom = area.bottom;
     out.top = out.bottom - height;
@@ -178,25 +151,21 @@ RECT LargestRegionAroundAnchor(const RECT& workArea, const RECT& anchor) {
        workArea.bottom},
   };
 
-  int bestIndex = -1;
-  int bestArea = -1;
-
+  int best = -1, bestArea = -1;
   for (int i = 0; i < 4; ++i) {
-    if (candidates[i].right < candidates[i].left) {
+    if (candidates[i].right < candidates[i].left)
       candidates[i].right = candidates[i].left;
-    }
-    if (candidates[i].bottom < candidates[i].top) {
+    if (candidates[i].bottom < candidates[i].top)
       candidates[i].bottom = candidates[i].top;
-    }
 
-    const int currentArea = Area(candidates[i]);
-    if (currentArea > bestArea) {
-      bestArea = currentArea;
-      bestIndex = i;
+    const int area = Area(candidates[i]);
+    if (area > bestArea) {
+      bestArea = area;
+      best = i;
     }
   }
 
-  return bestIndex >= 0 ? candidates[bestIndex] : workArea;
+  return best >= 0 ? candidates[best] : workArea;
 }
 
 void BuildMonitorBuckets(const std::vector<HWND>& windows,
@@ -204,18 +173,13 @@ void BuildMonitorBuckets(const std::vector<HWND>& windows,
   buckets.reserve(4);
   for (HWND hwnd : windows) {
     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-
     auto it = std::find_if(buckets.begin(), buckets.end(),
                            [monitor](const MonitorBucket& bucket) {
                              return bucket.monitor == monitor;
                            });
 
     if (it == buckets.end()) {
-      MonitorBucket bucket;
-      bucket.monitor = monitor;
-      bucket.workArea = SafeMonitorWorkArea(monitor);
-      bucket.windows.push_back(hwnd);
-      buckets.push_back(std::move(bucket));
+      buckets.push_back({monitor, SafeMonitorWorkArea(monitor), {hwnd}});
     } else {
       it->windows.push_back(hwnd);
     }
@@ -225,7 +189,6 @@ void BuildMonitorBuckets(const std::vector<HWND>& windows,
 BOOL CALLBACK CollectWindowsProc(HWND hwnd, LPARAM lParam) {
   auto* context = reinterpret_cast<EnumContext*>(lParam);
   if (!context || !context->windows || !context->filter) return TRUE;
-
   if (context->filter(hwnd)) context->windows->push_back(hwnd);
   return TRUE;
 }
@@ -249,12 +212,10 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
   const bool hasAnchor = anchorHwnd && anchorRect && IsWindow(anchorHwnd);
 
   for (auto& bucket : buckets) {
-    auto focusedWindow =
+    auto focused =
         std::find(bucket.windows.begin(), bucket.windows.end(), foreground);
-    if (focusedWindow != bucket.windows.end() &&
-        focusedWindow != bucket.windows.begin()) {
-      std::rotate(bucket.windows.begin(), focusedWindow, focusedWindow + 1);
-    }
+    if (focused != bucket.windows.end() && focused != bucket.windows.begin())
+      std::rotate(bucket.windows.begin(), focused, focused + 1);
 
     const RECT tiledArea = InsetRect(bucket.workArea, kOuterGap);
 
@@ -272,18 +233,16 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
     const RECT fixedAnchor = ClampRectToArea(*anchorRect, tiledArea);
     PushCell(result, anchorHwnd, fixedAnchor);
 
-    std::vector<HWND> otherWindows;
-    otherWindows.reserve(bucket.windows.size());
-    for (HWND hwnd : bucket.windows) {
-      if (hwnd != anchorHwnd) otherWindows.push_back(hwnd);
-    }
-
-    if (otherWindows.empty()) continue;
+    std::vector<HWND> others;
+    others.reserve(bucket.windows.size());
+    for (HWND hwnd : bucket.windows)
+      if (hwnd != anchorHwnd) others.push_back(hwnd);
+    if (others.empty()) continue;
 
     const RECT leftover = LargestRegionAroundAnchor(tiledArea, fixedAnchor);
     if (Area(leftover) < kMinLeftoverArea) continue;
 
-    LayoutDwindleInArea(result, otherWindows, leftover);
+    LayoutDwindleInArea(result, others, leftover);
   }
 
   return result;
@@ -293,7 +252,6 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
                                const RECT* anchorRect, int animationDurationMs,
                                HWND skipApplyWindow, RECT* skippedTargetRect) {
   if (!filter || g_isApplyingLayout) return;
-
   g_isApplyingLayout = true;
 
   std::vector<HWND> windows;
@@ -312,11 +270,9 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
       continue;
     }
 
-    RECT currentRect{};
-    if (!GetWindowRect(item.hwnd, &currentRect) ||
-        EqualRect(&currentRect, &item.rect)) {
+    RECT current{};
+    if (!GetWindowRect(item.hwnd, &current) || EqualRect(&current, &item.rect))
       continue;
-    }
 
     const int width = item.rect.right - item.rect.left;
     const int height = item.rect.bottom - item.rect.top;
@@ -335,8 +291,8 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
     }
   }
 
-  std::wcout << L"Layout computed for " << layout.size()
-             << L" window(s), moved " << movedCount << L"." << std::endl;
+  std::wcout << L"Layout computed for " << layout.size() << L" window(s), moved "
+             << movedCount << L"." << std::endl;
 
   g_isApplyingLayout = false;
 }
