@@ -5,7 +5,7 @@
 #include <iostream>
 #include <unordered_set>
 
-#include "alt_resize.h"
+#include "alt-maxmin.h"
 #include "animations.h"
 #include "layout.h"
 
@@ -68,28 +68,27 @@ bool InstallHooks(DWORD hookFlags, HookSet* out) {
                               WinEventHookProc, 0, 0, hookFlags);
   out->hide = SetWinEventHook(EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE, nullptr,
                               WinEventHookProc, 0, 0, hookFlags);
-  out->destroy =
-      SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr,
-                      WinEventHookProc, 0, 0, hookFlags);
-  out->moveSizeStart = SetWinEventHook(
-      EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART, nullptr,
-      WinEventHookProc, 0, 0, hookFlags);
-  out->moveSizeEnd = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND,
-                                     EVENT_SYSTEM_MOVESIZEEND, nullptr,
-                                     WinEventHookProc, 0, 0, hookFlags);
-  out->minimizeStart = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,
-                                       EVENT_SYSTEM_MINIMIZESTART, nullptr,
-                                       WinEventHookProc, 0, 0, hookFlags);
-  out->minimizeEnd = SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND,
-                                     EVENT_SYSTEM_MINIMIZEEND, nullptr,
-                                     WinEventHookProc, 0, 0, hookFlags);
-  out->stateChange = SetWinEventHook(EVENT_OBJECT_STATECHANGE,
-                                     EVENT_OBJECT_STATECHANGE, nullptr,
-                                     WinEventHookProc, 0, 0, hookFlags);
+  out->destroy = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY,
+                                 nullptr, WinEventHookProc, 0, 0, hookFlags);
+  out->moveSizeStart =
+      SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+  out->moveSizeEnd =
+      SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+  out->minimizeStart =
+      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+  out->minimizeEnd =
+      SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+  out->stateChange =
+      SetWinEventHook(EVENT_OBJECT_STATECHANGE, EVENT_OBJECT_STATECHANGE,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
 
-  const bool ok = out->show && out->hide && out->destroy && out->moveSizeStart &&
-                  out->moveSizeEnd && out->minimizeStart && out->minimizeEnd &&
-                  out->stateChange;
+  const bool ok = out->show && out->hide && out->destroy &&
+                  out->moveSizeStart && out->moveSizeEnd &&
+                  out->minimizeStart && out->minimizeEnd && out->stateChange;
   if (ok) return true;
   UnhookAll(*out);
   *out = {};
@@ -144,14 +143,6 @@ BOOL CALLBACK SyncManagedEnumProc(HWND hwnd, LPARAM lParam) {
   return TRUE;
 }
 
-void OnAltResizeCommit(HWND hwnd, const RECT& rect) {
-  if (!IsWMWindow(hwnd)) return;
-  g_anchorHwnd = hwnd;
-  g_anchorRect = rect;
-  g_hasAnchorRect = true;
-  QueueRelayout();
-}
-
 void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
                                LONG idObject, LONG idChild, DWORD, DWORD) {
   if (!hwnd) return;
@@ -189,7 +180,8 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
 
   if (event == EVENT_OBJECT_STATECHANGE) {
-    const bool managedBefore = g_managedWindows.find(hwnd) != g_managedWindows.end();
+    const bool managedBefore =
+        g_managedWindows.find(hwnd) != g_managedWindows.end();
     const bool managedNow = IsWMWindow(hwnd);
     if (managedNow)
       g_managedWindows.insert(hwnd);
@@ -246,7 +238,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
   EnumWindows(SyncManagedEnumProc, reinterpret_cast<LPARAM>(&g_managedWindows));
 
-  if (!InstallAltResizeHook(IsWMWindow, OnAltResizeCommit)) {
+  if (!InstallAltMaxMinHook(IsWMWindow)) {
     UnhookAll(hooks);
     return 1;
   }
@@ -332,7 +324,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     DispatchMessage(&msg);
   }
 
-  UninstallAltResizeHook();
+  UninstallAltMaxMinHook();
   UnhookAll(hooks);
   return 0;
 }

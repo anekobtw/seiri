@@ -1,10 +1,9 @@
-#include "alt_resize.h"
+#include "alt-maxmin.h"
 
 namespace {
 
 HHOOK g_keyboardHook = nullptr;
-AltResizeWindowFilterFn g_filter = nullptr;
-AltResizeCommitFn g_onCommit = nullptr;
+AltMaxMinWindowFilterFn g_filter = nullptr;
 DWORD g_lastAltTapTick = 0;
 bool g_altDown = false;
 
@@ -31,12 +30,6 @@ HWND ResolveTargetWindow() {
   return IsCandidateWindow(hwnd) ? hwnd : nullptr;
 }
 
-void CommitRect(HWND hwnd) {
-  if (!g_onCommit || !hwnd || !IsWindow(hwnd)) return;
-  RECT rect{};
-  if (GetWindowRect(hwnd, &rect)) g_onCommit(hwnd, rect);
-}
-
 void TryHandleAltTap() {
   const DWORD now = GetTickCount();
   const DWORD elapsed = now - g_lastAltTapTick;
@@ -47,12 +40,10 @@ void TryHandleAltTap() {
   const HWND hwnd = ResolveTargetWindow();
   if (!hwnd) return;
 
-  ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-  CommitRect(hwnd);
+  ShowWindow(hwnd, IsZoomed(hwnd) ? SW_MINIMIZE : SW_MAXIMIZE);
 }
 
-LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam,
-                                      LPARAM lParam) {
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode < 0 || !lParam)
     return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 
@@ -63,8 +54,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam,
   }
 
   if ((key->flags & LLKHF_UP) == 0) {
-    if (!g_altDown &&
-        (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+    if (!g_altDown && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
       g_altDown = true;
       TryHandleAltTap();
     }
@@ -77,32 +67,28 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam,
 
 }  // namespace
 
-bool InstallAltResizeHook(AltResizeWindowFilterFn filter,
-                          AltResizeCommitFn onCommit) {
+bool InstallAltMaxMinHook(AltMaxMinWindowFilterFn filter) {
   if (g_keyboardHook) return true;
 
   g_filter = filter;
-  g_onCommit = onCommit;
   g_keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc,
                                     GetModuleHandle(nullptr), 0);
 
   if (g_keyboardHook) return true;
 
   g_filter = nullptr;
-  g_onCommit = nullptr;
   g_lastAltTapTick = 0;
   g_altDown = false;
   return false;
 }
 
-void UninstallAltResizeHook() {
+void UninstallAltMaxMinHook() {
   if (g_keyboardHook) {
     UnhookWindowsHookEx(g_keyboardHook);
     g_keyboardHook = nullptr;
   }
 
   g_filter = nullptr;
-  g_onCommit = nullptr;
   g_lastAltTapTick = 0;
   g_altDown = false;
 }
