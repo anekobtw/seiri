@@ -14,99 +14,101 @@ constexpr int kMinTileHeight = 70;
 constexpr int kMinLeftoverArea = 20000;
 
 struct MonitorBucket {
-  HMONITOR monitor;
-  RECT workArea;
+  HMONITOR monitor = nullptr;
+  RECT workArea{};
   std::vector<HWND> windows;
 };
 
 struct EnumContext {
-  std::vector<HWND>* windows;
-  WindowFilterFn filter;
+  std::vector<HWND>* windows = nullptr;
+  WindowFilterFn filter = nullptr;
 };
 
 bool g_isApplyingLayout = false;
 
-int Width(const RECT& r) { return r.right - r.left; }
-int Height(const RECT& r) { return r.bottom - r.top; }
-int Area(const RECT& r) {
-  int w = Width(r);
-  int h = Height(r);
-  if (w <= 0 || h <= 0) return 0;
-  return w * h;
+int Width(const RECT& rect) { return rect.right - rect.left; }
+int Height(const RECT& rect) { return rect.bottom - rect.top; }
+
+int Area(const RECT& rect) {
+  const int w = Width(rect);
+  const int h = Height(rect);
+  return (w > 0 && h > 0) ? w * h : 0;
 }
 
-RECT InsetRect(const RECT& r, int inset) {
-  RECT out = r;
-  out.left += inset;
-  out.top += inset;
-  out.right -= inset;
-  out.bottom -= inset;
+RECT InsetRect(const RECT& rect, int inset) {
+  RECT result = rect;
+  result.left += inset;
+  result.top += inset;
+  result.right -= inset;
+  result.bottom -= inset;
 
-  if (out.right < out.left) out.right = out.left;
-  if (out.bottom < out.top) out.bottom = out.top;
+  if (result.right < result.left) result.right = result.left;
+  if (result.bottom < result.top) result.bottom = result.top;
 
-  return out;
+  return result;
 }
 
 RECT SafeMonitorWorkArea(HMONITOR monitor) {
-  MONITORINFO mi{};
-  mi.cbSize = sizeof(mi);
+  MONITORINFO monitorInfo{};
+  monitorInfo.cbSize = sizeof(monitorInfo);
 
-  if (monitor && GetMonitorInfo(monitor, &mi)) return mi.rcWork;
+  if (monitor && GetMonitorInfo(monitor, &monitorInfo)) {
+    return monitorInfo.rcWork;
+  }
 
   RECT fallback{};
-  fallback.left = 0;
-  fallback.top = 0;
   fallback.right = GetSystemMetrics(SM_CXSCREEN);
   fallback.bottom = GetSystemMetrics(SM_CYSCREEN);
   return fallback;
 }
 
-void PushCell(std::vector<WindowRect>& out, HWND hwnd, const RECT& r) {
-  RECT safe = r;
-  if (safe.right < safe.left) safe.right = safe.left;
-  if (safe.bottom < safe.top) safe.bottom = safe.top;
-
-  out.push_back({hwnd, safe});
+void PushCell(std::vector<WindowRect>& out, HWND hwnd, const RECT& rect) {
+  RECT safeRect = rect;
+  if (safeRect.right < safeRect.left) safeRect.right = safeRect.left;
+  if (safeRect.bottom < safeRect.top) safeRect.bottom = safeRect.top;
+  out.push_back({hwnd, safeRect});
 }
 
 void SplitVertical(const RECT& in, RECT& left, RECT& right) {
-  int totalW = Width(in);
-  if (totalW <= 1) {
+  const int totalWidth = Width(in);
+  if (totalWidth <= 1) {
     left = in;
     right = in;
     return;
   }
 
-  int usable = std::max(1, totalW - kInnerGap);
-  int leftW = static_cast<int>(usable * kSplitRatio);
-  int minW = std::max(kMinTileWidth, usable / 4);
-  if (leftW < minW) leftW = minW;
-  if (leftW > usable - minW) leftW = usable - minW;
+  const int usableWidth = std::max(1, totalWidth - kInnerGap);
+  int leftWidth = static_cast<int>(usableWidth * kSplitRatio);
+  const int minWidth = std::max(kMinTileWidth, usableWidth / 4);
+
+  if (leftWidth < minWidth) leftWidth = minWidth;
+  if (leftWidth > usableWidth - minWidth) leftWidth = usableWidth - minWidth;
 
   left = in;
-  left.right = left.left + leftW;
+  left.right = left.left + leftWidth;
 
   right = in;
   right.left = left.right + kInnerGap;
 }
 
 void SplitHorizontal(const RECT& in, RECT& top, RECT& bottom) {
-  int totalH = Height(in);
-  if (totalH <= 1) {
+  const int totalHeight = Height(in);
+  if (totalHeight <= 1) {
     top = in;
     bottom = in;
     return;
   }
 
-  int usable = std::max(1, totalH - kInnerGap);
-  int topH = static_cast<int>(usable * kSplitRatio);
-  int minH = std::max(kMinTileHeight, usable / 4);
-  if (topH < minH) topH = minH;
-  if (topH > usable - minH) topH = usable - minH;
+  const int usableHeight = std::max(1, totalHeight - kInnerGap);
+  int topHeight = static_cast<int>(usableHeight * kSplitRatio);
+  const int minHeight = std::max(kMinTileHeight, usableHeight / 4);
+
+  if (topHeight < minHeight) topHeight = minHeight;
+  if (topHeight > usableHeight - minHeight)
+    topHeight = usableHeight - minHeight;
 
   top = in;
-  top.bottom = top.top + topH;
+  top.bottom = top.top + topHeight;
 
   bottom = in;
   bottom.top = top.bottom + kInnerGap;
@@ -117,57 +119,57 @@ void LayoutDwindleInArea(std::vector<WindowRect>& out,
   if (windows.empty()) return;
 
   RECT remaining = area;
-  int n = static_cast<int>(windows.size());
+  const int windowCount = static_cast<int>(windows.size());
 
-  if (n == 1) {
+  if (windowCount == 1) {
     PushCell(out, windows[0], remaining);
     return;
   }
 
   bool splitVertical = Width(remaining) >= Height(remaining);
 
-  for (int i = 0; i < n - 1; ++i) {
-    RECT a{}, b{};
+  for (int i = 0; i < windowCount - 1; ++i) {
+    RECT first{}, second{};
 
     if (splitVertical) {
-      SplitVertical(remaining, a, b);
+      SplitVertical(remaining, first, second);
     } else {
-      SplitHorizontal(remaining, a, b);
+      SplitHorizontal(remaining, first, second);
     }
 
-    PushCell(out, windows[i], a);
-    remaining = b;
+    PushCell(out, windows[i], first);
+    remaining = second;
     splitVertical = !splitVertical;
   }
 
-  PushCell(out, windows[n - 1], remaining);
+  PushCell(out, windows[windowCount - 1], remaining);
 }
 
-RECT ClampRectToArea(const RECT& r, const RECT& area) {
-  RECT out = r;
+RECT ClampRectToArea(const RECT& rect, const RECT& area) {
+  RECT out = rect;
 
-  int w = Width(out);
-  int h = Height(out);
-  if (w < kMinTileWidth) w = kMinTileWidth;
-  if (h < kMinTileHeight) h = kMinTileHeight;
+  int width = Width(out);
+  int height = Height(out);
+  if (width < kMinTileWidth) width = kMinTileWidth;
+  if (height < kMinTileHeight) height = kMinTileHeight;
 
-  if (w > Width(area)) w = Width(area);
-  if (h > Height(area)) h = Height(area);
+  width = std::min(width, Width(area));
+  height = std::min(height, Height(area));
 
   if (out.left < area.left) out.left = area.left;
   if (out.top < area.top) out.top = area.top;
 
-  out.right = out.left + w;
-  out.bottom = out.top + h;
+  out.right = out.left + width;
+  out.bottom = out.top + height;
 
   if (out.right > area.right) {
     out.right = area.right;
-    out.left = out.right - w;
+    out.left = out.right - width;
   }
 
   if (out.bottom > area.bottom) {
     out.bottom = area.bottom;
-    out.top = out.bottom - h;
+    out.top = out.bottom - height;
   }
 
   return out;
@@ -182,41 +184,43 @@ RECT LargestRegionAroundAnchor(const RECT& workArea, const RECT& anchor) {
        workArea.bottom},
   };
 
-  int bestIdx = -1;
+  int bestIndex = -1;
   int bestArea = -1;
-  for (int i = 0; i < 4; ++i) {
-    if (candidates[i].right < candidates[i].left)
-      candidates[i].right = candidates[i].left;
-    if (candidates[i].bottom < candidates[i].top)
-      candidates[i].bottom = candidates[i].top;
 
-    int a = Area(candidates[i]);
-    if (a > bestArea) {
-      bestArea = a;
-      bestIdx = i;
+  for (int i = 0; i < 4; ++i) {
+    if (candidates[i].right < candidates[i].left) {
+      candidates[i].right = candidates[i].left;
+    }
+    if (candidates[i].bottom < candidates[i].top) {
+      candidates[i].bottom = candidates[i].top;
+    }
+
+    const int currentArea = Area(candidates[i]);
+    if (currentArea > bestArea) {
+      bestArea = currentArea;
+      bestIndex = i;
     }
   }
 
-  if (bestIdx < 0) return workArea;
-  return candidates[bestIdx];
+  return bestIndex >= 0 ? candidates[bestIndex] : workArea;
 }
 
 void BuildMonitorBuckets(const std::vector<HWND>& windows,
                          std::vector<MonitorBucket>& buckets) {
-  buckets.clear();
   buckets.reserve(4);
 
   for (HWND hwnd : windows) {
-    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
 
-    auto it = std::find_if(
-        buckets.begin(), buckets.end(),
-        [mon](const MonitorBucket& b) { return b.monitor == mon; });
+    auto it = std::find_if(buckets.begin(), buckets.end(),
+                           [monitor](const MonitorBucket& bucket) {
+                             return bucket.monitor == monitor;
+                           });
 
     if (it == buckets.end()) {
-      MonitorBucket bucket{};
-      bucket.monitor = mon;
-      bucket.workArea = SafeMonitorWorkArea(mon);
+      MonitorBucket bucket;
+      bucket.monitor = monitor;
+      bucket.workArea = SafeMonitorWorkArea(monitor);
       bucket.windows.push_back(hwnd);
       buckets.push_back(std::move(bucket));
     } else {
@@ -230,7 +234,6 @@ BOOL CALLBACK CollectWindowsProc(HWND hwnd, LPARAM lParam) {
   if (!context || !context->windows || !context->filter) return TRUE;
 
   if (context->filter(hwnd)) context->windows->push_back(hwnd);
-
   return TRUE;
 }
 
@@ -249,47 +252,40 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
   std::vector<MonitorBucket> buckets;
   BuildMonitorBuckets(windows, buckets);
 
-  HWND foreground = GetForegroundWindow();
+  const HWND foreground = GetForegroundWindow();
   const bool hasAnchor = anchorHwnd && anchorRect && IsWindow(anchorHwnd);
 
   for (auto& bucket : buckets) {
-    auto focusIt =
+    auto focusedWindow =
         std::find(bucket.windows.begin(), bucket.windows.end(), foreground);
-    if (focusIt != bucket.windows.end() && focusIt != bucket.windows.begin()) {
-      std::rotate(bucket.windows.begin(), focusIt, focusIt + 1);
+    if (focusedWindow != bucket.windows.end() &&
+        focusedWindow != bucket.windows.begin()) {
+      std::rotate(bucket.windows.begin(), focusedWindow, focusedWindow + 1);
     }
 
-    RECT tiledArea = InsetRect(bucket.workArea, kOuterGap);
+    const RECT tiledArea = InsetRect(bucket.workArea, kOuterGap);
 
-    if (!hasAnchor) {
+    if (!hasAnchor || std::find(bucket.windows.begin(), bucket.windows.end(),
+                                anchorHwnd) == bucket.windows.end()) {
       LayoutDwindleInArea(result, bucket.windows, tiledArea);
       continue;
     }
 
-    auto anchorIt =
-        std::find(bucket.windows.begin(), bucket.windows.end(), anchorHwnd);
-    if (anchorIt == bucket.windows.end()) {
-      LayoutDwindleInArea(result, bucket.windows, tiledArea);
-      continue;
-    }
-
-    RECT fixedAnchor = ClampRectToArea(*anchorRect, tiledArea);
+    const RECT fixedAnchor = ClampRectToArea(*anchorRect, tiledArea);
     PushCell(result, anchorHwnd, fixedAnchor);
 
-    std::vector<HWND> others;
-    others.reserve(bucket.windows.size());
-    for (HWND w : bucket.windows) {
-      if (w != anchorHwnd) others.push_back(w);
+    std::vector<HWND> otherWindows;
+    otherWindows.reserve(bucket.windows.size());
+    for (HWND hwnd : bucket.windows) {
+      if (hwnd != anchorHwnd) otherWindows.push_back(hwnd);
     }
 
-    if (others.empty()) continue;
+    if (otherWindows.empty()) continue;
 
-    RECT leftover = LargestRegionAroundAnchor(tiledArea, fixedAnchor);
-    if (Area(leftover) < kMinLeftoverArea) {
-      continue;
-    }
+    const RECT leftover = LargestRegionAroundAnchor(tiledArea, fixedAnchor);
+    if (Area(leftover) < kMinLeftoverArea) continue;
 
-    LayoutDwindleInArea(result, others, leftover);
+    LayoutDwindleInArea(result, otherWindows, leftover);
   }
 
   return result;
@@ -305,29 +301,31 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
   EnumContext context{&windows, filter};
   EnumWindows(CollectWindowsProc, reinterpret_cast<LPARAM>(&context));
 
-  auto layout =
+  const auto layout =
       calculateWindowResolutionWithAnchor(windows, anchorHwnd, anchorRect);
 
-  int moved = 0;
+  int movedCount = 0;
   for (const auto& item : layout) {
     if (!IsWindow(item.hwnd)) continue;
 
-    RECT current{};
-    if (!GetWindowRect(item.hwnd, &current)) continue;
-    if (EqualRect(&current, &item.rect)) continue;
+    RECT currentRect{};
+    if (!GetWindowRect(item.hwnd, &currentRect) ||
+        EqualRect(&currentRect, &item.rect)) {
+      continue;
+    }
 
-    int width = item.rect.right - item.rect.left;
-    int height = item.rect.bottom - item.rect.top;
+    const int width = item.rect.right - item.rect.left;
+    const int height = item.rect.bottom - item.rect.top;
 
     if (SetWindowPos(item.hwnd, nullptr, item.rect.left, item.rect.top, width,
                      height,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING)) {
-      ++moved;
+      ++movedCount;
     }
   }
 
   std::wcout << L"Layout computed for " << layout.size()
-             << L" window(s), moved " << moved << L"." << std::endl;
+             << L" window(s), moved " << movedCount << L"." << std::endl;
 
   g_isApplyingLayout = false;
 }

@@ -8,113 +8,69 @@
 
 namespace {
 
-constexpr UINT kMsgRelayout = WM_APP + 1;
+constexpr UINT kRelayoutMessage = WM_APP + 1;
 constexpr DWORD kRelayoutDebounceMs = 120;
-constexpr DWORD kDwmwaCloaked = 14;
+constexpr DWORD kDwAttributeCloaked = 14;
 
-DWORD g_lastLayoutTick = 0;
-DWORD g_mainThreadId = 0;
-bool g_isUserMovingWindow = false;
-HWND g_moveSizeWindow = nullptr;
-bool g_layoutQueued = false;
-std::unordered_set<HWND> g_trackedWindows;
-HWND g_anchorWindow = nullptr;
+DWORD g_lastRelayoutTick = 0;
+bool g_isMoveSizeActive = false;
+HWND g_moveSizeHwnd = nullptr;
+bool g_isRelayoutQueued = false;
+std::unordered_set<HWND> g_managedWindows;
+HWND g_anchorHwnd = nullptr;
 RECT g_anchorRect{};
 bool g_hasAnchorRect = false;
 
 }  // namespace
 
-bool IsOnCurrentDesktop(HWND hwnd) {
+bool IsWMWindow(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
+  if (GetAncestor(hwnd, GA_ROOT) != hwnd ||
+      GetWindow(hwnd, GW_OWNER) != nullptr)
+    return false;
+
+  const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+  if ((style & WS_THICKFRAME) == 0 || (exStyle & WS_EX_TOOLWINDOW) ||
+      (exStyle & WS_EX_NOACTIVATE)) {
+    return false;
+  }
+
   // i assume that if a window is on another desktop, then it's cloaked by DWM
   using DwmGetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
-  static DwmGetWindowAttributeFn pDwmGetWindowAttribute = nullptr;
+  static DwmGetWindowAttributeFn getWindowAttribute = nullptr;
   static bool initialized = false;
 
   if (!initialized) {
-    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
-    if (dwm) {
-      pDwmGetWindowAttribute = reinterpret_cast<DwmGetWindowAttributeFn>(
+    if (HMODULE dwm = LoadLibraryW(L"dwmapi.dll")) {
+      getWindowAttribute = reinterpret_cast<DwmGetWindowAttributeFn>(
           GetProcAddress(dwm, "DwmGetWindowAttribute"));
     }
     initialized = true;
   }
 
-  if (!pDwmGetWindowAttribute) return true;
+  if (!getWindowAttribute) return true;
 
   DWORD cloaked = 0;
   const HRESULT hr =
-      pDwmGetWindowAttribute(hwnd, kDwmwaCloaked, &cloaked, sizeof(cloaked));
+      getWindowAttribute(hwnd, kDwAttributeCloaked, &cloaked, sizeof(cloaked));
 
-  if (FAILED(hr)) return true;
-  return cloaked == 0;
-}
-
-bool IsWindowManageable(HWND hwnd) {
-  const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-  const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-
-  if ((style & WS_THICKFRAME) == 0) return false;
-  if (exStyle & WS_EX_TOOLWINDOW) return false;
-  if (exStyle & WS_EX_NOACTIVATE) return false;
-
-  return true;
-}
-
-bool IsWMWindow(HWND hwnd) {
-  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
-  if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
-  if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
-  if (!IsOnCurrentDesktop(hwnd)) return false;
-  if (!IsWindowManageable(hwnd)) return false;
-
-  return true;
+  return FAILED(hr) || cloaked == 0;
 }
 
 void QueueRelayout() {
-  if (g_layoutQueued) return;
+  if (g_isRelayoutQueued) return;
 
-  g_layoutQueued = true;
-  if (!PostThreadMessage(g_mainThreadId, kMsgRelayout, 0, 0)) {
-    g_layoutQueued = false;
+  g_isRelayoutQueued = true;
+  if (!PostThreadMessage(GetCurrentThreadId(), kRelayoutMessage, 0, 0)) {
+    g_isRelayoutQueued = false;
   }
 }
 
-BOOL CALLBACK SyncTrackedEnumProc(HWND hwnd, LPARAM lParam) {
+BOOL CALLBACK SyncManagedEnumProc(HWND hwnd, LPARAM lParam) {
   auto* out = reinterpret_cast<std::unordered_set<HWND>*>(lParam);
-  if (!out) return TRUE;
-
-  if (IsWMWindow(hwnd)) out->insert(hwnd);
+  if (out && IsWMWindow(hwnd)) out->insert(hwnd);
   return TRUE;
-}
-
-void SyncTrackedWindows() {
-  std::unordered_set<HWND> next;
-  EnumWindows(SyncTrackedEnumProc, reinterpret_cast<LPARAM>(&next));
-  g_trackedWindows.swap(next);
-}
-
-void ProcessRelayout() {
-  g_layoutQueued = false;
-
-  if (g_isUserMovingWindow) return;
-
-  const DWORD now = GetTickCount();
-  if ((now - g_lastLayoutTick) < kRelayoutDebounceMs) {
-    return;
-  }
-
-  g_lastLayoutTick = now;
-  SyncTrackedWindows();
-
-  if (g_hasAnchorRect && (!g_anchorWindow || !IsWindow(g_anchorWindow) ||
-                          !IsWMWindow(g_anchorWindow))) {
-    g_anchorWindow = nullptr;
-    g_hasAnchorRect = false;
-  }
-
-  RecalculateAndApplyLayout(IsWMWindow,
-                            g_hasAnchorRect ? g_anchorWindow : nullptr,
-                            g_hasAnchorRect ? &g_anchorRect : nullptr);
 }
 
 void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
@@ -123,20 +79,20 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
 
   if (event == EVENT_SYSTEM_MOVESIZESTART) {
     if (IsWMWindow(hwnd)) {
-      g_isUserMovingWindow = true;
-      g_moveSizeWindow = hwnd;
+      g_isMoveSizeActive = true;
+      g_moveSizeHwnd = hwnd;
     }
     return;
   }
 
   if (event == EVENT_SYSTEM_MOVESIZEEND) {
-    if (g_moveSizeWindow == hwnd || g_moveSizeWindow == nullptr) {
-      g_isUserMovingWindow = false;
-      g_moveSizeWindow = nullptr;
+    if (g_moveSizeHwnd == hwnd || g_moveSizeHwnd == nullptr) {
+      g_isMoveSizeActive = false;
+      g_moveSizeHwnd = nullptr;
     }
 
     if (IsWMWindow(hwnd) && GetWindowRect(hwnd, &g_anchorRect)) {
-      g_anchorWindow = hwnd;
+      g_anchorHwnd = hwnd;
       g_hasAnchorRect = true;
     }
 
@@ -147,10 +103,7 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
 
   if (event == EVENT_OBJECT_SHOW) {
-    if (!IsWMWindow(hwnd)) return;
-
-    const bool inserted = g_trackedWindows.insert(hwnd).second;
-    if (!inserted) return;
+    if (!IsWMWindow(hwnd) || !g_managedWindows.insert(hwnd).second) return;
 
     wchar_t title[256] = {0};
     GetWindowTextW(hwnd, title, 256);
@@ -162,25 +115,21 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
   }
 
   if (event == EVENT_OBJECT_DESTROY || event == EVENT_OBJECT_HIDE) {
-    if (hwnd == g_anchorWindow) {
-      g_anchorWindow = nullptr;
+    if (hwnd == g_anchorHwnd) {
+      g_anchorHwnd = nullptr;
       g_hasAnchorRect = false;
     }
 
-    if (hwnd == g_moveSizeWindow) {
-      g_moveSizeWindow = nullptr;
-      g_isUserMovingWindow = false;
+    if (hwnd == g_moveSizeHwnd) {
+      g_moveSizeHwnd = nullptr;
+      g_isMoveSizeActive = false;
     }
 
-    if (g_trackedWindows.erase(hwnd) > 0) {
-      QueueRelayout();
-    }
+    if (g_managedWindows.erase(hwnd) > 0) QueueRelayout();
   }
 }
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-  g_mainThreadId = GetCurrentThreadId();
-
   MSG initMsg;
   PeekMessage(&initMsg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
 
@@ -216,13 +165,34 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     return 1;
   }
 
-  SyncTrackedWindows();
+  EnumWindows(SyncManagedEnumProc, reinterpret_cast<LPARAM>(&g_managedWindows));
   QueueRelayout();
 
   MSG msg;
   while (GetMessage(&msg, nullptr, 0, 0)) {
-    if (msg.message == kMsgRelayout) {
-      ProcessRelayout();
+    if (msg.message == kRelayoutMessage) {
+      g_isRelayoutQueued = false;
+
+      if (g_isMoveSizeActive) continue;
+
+      const DWORD now = GetTickCount();
+      if ((now - g_lastRelayoutTick) < kRelayoutDebounceMs) continue;
+
+      g_lastRelayoutTick = now;
+
+      std::unordered_set<HWND> next;
+      EnumWindows(SyncManagedEnumProc, reinterpret_cast<LPARAM>(&next));
+      g_managedWindows.swap(next);
+
+      if (g_hasAnchorRect && (!g_anchorHwnd || !IsWindow(g_anchorHwnd) ||
+                              !IsWMWindow(g_anchorHwnd))) {
+        g_anchorHwnd = nullptr;
+        g_hasAnchorRect = false;
+      }
+
+      RecalculateAndApplyLayout(IsWMWindow,
+                                g_hasAnchorRect ? g_anchorHwnd : nullptr,
+                                g_hasAnchorRect ? &g_anchorRect : nullptr);
       continue;
     }
 
