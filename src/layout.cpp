@@ -4,6 +4,8 @@
 #include <iostream>
 #include <vector>
 
+#include "animations.h"
+
 namespace {
 
 constexpr int kOuterGap = 10;
@@ -28,10 +30,8 @@ bool g_isApplyingLayout = false;
 
 int Width(const RECT& rect) { return rect.right - rect.left; }
 int Height(const RECT& rect) { return rect.bottom - rect.top; }
-
 int Area(const RECT& rect) {
-  const int w = Width(rect);
-  const int h = Height(rect);
+  const int w = rect.right - rect.left, h = rect.bottom - rect.top;
   return (w > 0 && h > 0) ? w * h : 0;
 }
 
@@ -51,15 +51,9 @@ RECT InsetRect(const RECT& rect, int inset) {
 RECT SafeMonitorWorkArea(HMONITOR monitor) {
   MONITORINFO monitorInfo{};
   monitorInfo.cbSize = sizeof(monitorInfo);
-
-  if (monitor && GetMonitorInfo(monitor, &monitorInfo)) {
+  if (monitor && GetMonitorInfo(monitor, &monitorInfo))
     return monitorInfo.rcWork;
-  }
-
-  RECT fallback{};
-  fallback.right = GetSystemMetrics(SM_CXSCREEN);
-  fallback.bottom = GetSystemMetrics(SM_CYSCREEN);
-  return fallback;
+  return {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
 }
 
 void PushCell(std::vector<WindowRect>& out, HWND hwnd, const RECT& rect) {
@@ -208,7 +202,6 @@ RECT LargestRegionAroundAnchor(const RECT& workArea, const RECT& anchor) {
 void BuildMonitorBuckets(const std::vector<HWND>& windows,
                          std::vector<MonitorBucket>& buckets) {
   buckets.reserve(4);
-
   for (HWND hwnd : windows) {
     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
 
@@ -292,7 +285,8 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
 }
 
 void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
-                               const RECT* anchorRect) {
+                               const RECT* anchorRect, int animationDurationMs,
+                               HWND skipApplyWindow, RECT* skippedTargetRect) {
   if (!filter || g_isApplyingLayout) return;
 
   g_isApplyingLayout = true;
@@ -308,6 +302,11 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
   for (const auto& item : layout) {
     if (!IsWindow(item.hwnd)) continue;
 
+    if (item.hwnd == skipApplyWindow) {
+      if (skippedTargetRect) *skippedTargetRect = item.rect;
+      continue;
+    }
+
     RECT currentRect{};
     if (!GetWindowRect(item.hwnd, &currentRect) ||
         EqualRect(&currentRect, &item.rect)) {
@@ -316,6 +315,13 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
 
     const int width = item.rect.right - item.rect.left;
     const int height = item.rect.bottom - item.rect.top;
+
+    if (animationDurationMs > 0) {
+      AnimateWindowTransform(item.hwnd, item.rect.left, item.rect.top, width,
+                             height, animationDurationMs);
+      ++movedCount;
+      continue;
+    }
 
     if (SetWindowPos(item.hwnd, nullptr, item.rect.left, item.rect.top, width,
                      height,
