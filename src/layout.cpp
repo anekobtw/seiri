@@ -258,6 +258,11 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
 
     const RECT tiledArea = InsetRect(bucket.workArea, kOuterGap);
 
+    if (bucket.windows.size() == 1) {
+      PushCell(result, bucket.windows.front(), tiledArea);
+      continue;
+    }
+
     if (!hasAnchor || std::find(bucket.windows.begin(), bucket.windows.end(),
                                 anchorHwnd) == bucket.windows.end()) {
       LayoutDwindleInArea(result, bucket.windows, tiledArea);

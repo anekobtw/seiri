@@ -33,7 +33,8 @@ bool g_pendingOpenStage = false;
 }  // namespace
 
 bool IsWMWindow(HWND hwnd) {
-  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd))
+    return false;
   if (GetAncestor(hwnd, GA_ROOT) != hwnd || GetWindow(hwnd, GW_OWNER))
     return false;
 
@@ -106,7 +107,32 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
     return;
   }
 
+  if (event == EVENT_SYSTEM_MINIMIZESTART ||
+      event == EVENT_SYSTEM_MINIMIZEEND) {
+    if (hwnd == g_anchorHwnd) {
+      g_anchorHwnd = nullptr;
+      g_hasAnchorRect = false;
+    }
+    QueueRelayout();
+    return;
+  }
+
   if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+
+  if (event == EVENT_OBJECT_STATECHANGE) {
+    const bool managedBefore =
+        g_managedWindows.find(hwnd) != g_managedWindows.end();
+    const bool managedNow = IsWMWindow(hwnd);
+
+    if (managedNow) {
+      g_managedWindows.insert(hwnd);
+    } else {
+      g_managedWindows.erase(hwnd);
+    }
+
+    if (managedBefore || managedNow) QueueRelayout();
+    return;
+  }
 
   if (event == EVENT_OBJECT_SHOW) {
     if (!IsWMWindow(hwnd) || !g_managedWindows.insert(hwnd).second) return;
@@ -172,13 +198,29 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
       SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND,
                       nullptr, WinEventHookProc, 0, 0, hookFlags);
 
+  HWINEVENTHOOK minimizeStartHook =
+      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+
+  HWINEVENTHOOK minimizeEndHook =
+      SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+
+  HWINEVENTHOOK stateChangeHook =
+      SetWinEventHook(EVENT_OBJECT_STATECHANGE, EVENT_OBJECT_STATECHANGE,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+
   if (!showHook || !hideHook || !destroyHook || !moveSizeStartHook ||
-      !moveSizeEndHook) {
+      !moveSizeEndHook || !minimizeStartHook || !minimizeEndHook ||
+      !stateChangeHook) {
     if (showHook) UnhookWinEvent(showHook);
     if (hideHook) UnhookWinEvent(hideHook);
     if (destroyHook) UnhookWinEvent(destroyHook);
     if (moveSizeStartHook) UnhookWinEvent(moveSizeStartHook);
     if (moveSizeEndHook) UnhookWinEvent(moveSizeEndHook);
+    if (minimizeStartHook) UnhookWinEvent(minimizeStartHook);
+    if (minimizeEndHook) UnhookWinEvent(minimizeEndHook);
+    if (stateChangeHook) UnhookWinEvent(stateChangeHook);
     return 1;
   }
 
@@ -208,6 +250,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
       HWND anchor = g_hasAnchorRect ? g_anchorHwnd : nullptr;
       const RECT* anchorRect = g_hasAnchorRect ? &g_anchorRect : nullptr;
+      const bool usedAnchor = (anchor != nullptr && anchorRect != nullptr);
 
       if (g_pendingOpenStage && g_pendingOpenHwnd &&
           g_managedWindows.find(g_pendingOpenHwnd) != g_managedWindows.end()) {
@@ -215,6 +258,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         RecalculateAndApplyLayout(IsWMWindow, anchor, anchorRect,
                                   kLayoutAnimationMs, g_pendingOpenHwnd,
                                   &target);
+
+        if (usedAnchor) {
+          g_anchorHwnd = nullptr;
+          g_hasAnchorRect = false;
+        }
 
         g_pendingOpenTargetRect = target;
         g_hasPendingOpenTargetRect = true;
@@ -225,6 +273,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
       RecalculateAndApplyLayout(IsWMWindow, anchor, anchorRect,
                                 kLayoutAnimationMs);
+
+      if (usedAnchor) {
+        g_anchorHwnd = nullptr;
+        g_hasAnchorRect = false;
+      }
       continue;
     }
 
@@ -267,5 +320,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   UnhookWinEvent(destroyHook);
   UnhookWinEvent(moveSizeStartHook);
   UnhookWinEvent(moveSizeEndHook);
+  UnhookWinEvent(minimizeStartHook);
+  UnhookWinEvent(minimizeEndHook);
+  UnhookWinEvent(stateChangeHook);
   return 0;
 }
