@@ -3,17 +3,19 @@
 
 #include <iostream>
 #include <unordered_set>
-#include <vector>
 
 #include "layout.h"
 
 namespace {
 
-constexpr UINT WM_APP_RELAYOUT = WM_APP + 1;
+constexpr UINT kMsgRelayout = WM_APP + 1;
+constexpr DWORD kRelayoutDebounceMs = 120;
+constexpr DWORD kDwmwaCloaked = 14;
 
 DWORD g_lastLayoutTick = 0;
 DWORD g_mainThreadId = 0;
 bool g_isUserMovingWindow = false;
+HWND g_moveSizeWindow = nullptr;
 bool g_layoutQueued = false;
 std::unordered_set<HWND> g_trackedWindows;
 HWND g_anchorWindow = nullptr;
@@ -40,17 +42,16 @@ bool IsOnCurrentDesktop(HWND hwnd) {
   if (!pDwmGetWindowAttribute) return true;
 
   DWORD cloaked = 0;
-  constexpr DWORD DWMWA_CLOAKED_ATTR = 14;
-  HRESULT hr = pDwmGetWindowAttribute(hwnd, DWMWA_CLOAKED_ATTR, &cloaked,
-                                      sizeof(cloaked));
-  if (FAILED(hr)) return true;
+  const HRESULT hr =
+      pDwmGetWindowAttribute(hwnd, kDwmwaCloaked, &cloaked, sizeof(cloaked));
 
+  if (FAILED(hr)) return true;
   return cloaked == 0;
 }
 
-bool IsWindowManagable(HWND hwnd) {
-  LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-  LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+bool IsWindowManageable(HWND hwnd) {
+  const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
 
   if ((style & WS_THICKFRAME) == 0) return false;
   if (exStyle & WS_EX_TOOLWINDOW) return false;
@@ -62,9 +63,9 @@ bool IsWindowManagable(HWND hwnd) {
 bool IsWMWindow(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
   if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
-  if (GetWindow(hwnd, GW_OWNER) != NULL) return false;
+  if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
   if (!IsOnCurrentDesktop(hwnd)) return false;
-  if (!IsWindowManagable(hwnd)) return false;
+  if (!IsWindowManageable(hwnd)) return false;
 
   return true;
 }
@@ -73,7 +74,9 @@ void QueueRelayout() {
   if (g_layoutQueued) return;
 
   g_layoutQueued = true;
-  PostThreadMessage(g_mainThreadId, WM_APP_RELAYOUT, 0, 0);
+  if (!PostThreadMessage(g_mainThreadId, kMsgRelayout, 0, 0)) {
+    g_layoutQueued = false;
+  }
 }
 
 BOOL CALLBACK SyncTrackedEnumProc(HWND hwnd, LPARAM lParam) {
@@ -95,14 +98,12 @@ void ProcessRelayout() {
 
   if (g_isUserMovingWindow) return;
 
-  DWORD now = GetTickCount();
-  if ((now - g_lastLayoutTick) < 120) {
-    QueueRelayout();
+  const DWORD now = GetTickCount();
+  if ((now - g_lastLayoutTick) < kRelayoutDebounceMs) {
     return;
   }
 
   g_lastLayoutTick = now;
-
   SyncTrackedWindows();
 
   if (g_hasAnchorRect && (!g_anchorWindow || !IsWindow(g_anchorWindow) ||
@@ -118,15 +119,21 @@ void ProcessRelayout() {
 
 void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
                                LONG idObject, LONG idChild, DWORD, DWORD) {
-  if (!hwnd || !IsWindow(hwnd)) return;
+  if (!hwnd) return;
 
   if (event == EVENT_SYSTEM_MOVESIZESTART) {
-    if (IsWMWindow(hwnd)) g_isUserMovingWindow = true;
+    if (IsWMWindow(hwnd)) {
+      g_isUserMovingWindow = true;
+      g_moveSizeWindow = hwnd;
+    }
     return;
   }
 
   if (event == EVENT_SYSTEM_MOVESIZEEND) {
-    g_isUserMovingWindow = false;
+    if (g_moveSizeWindow == hwnd || g_moveSizeWindow == nullptr) {
+      g_isUserMovingWindow = false;
+      g_moveSizeWindow = nullptr;
+    }
 
     if (IsWMWindow(hwnd) && GetWindowRect(hwnd, &g_anchorRect)) {
       g_anchorWindow = hwnd;
@@ -160,35 +167,44 @@ void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
       g_hasAnchorRect = false;
     }
 
+    if (hwnd == g_moveSizeWindow) {
+      g_moveSizeWindow = nullptr;
+      g_isUserMovingWindow = false;
+    }
+
     if (g_trackedWindows.erase(hwnd) > 0) {
       QueueRelayout();
     }
-    return;
   }
 }
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   g_mainThreadId = GetCurrentThreadId();
 
-  HWINEVENTHOOK showHook = SetWinEventHook(
-      EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, NULL, WinEventHookProc, 0, 0,
-      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  MSG initMsg;
+  PeekMessage(&initMsg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
 
-  HWINEVENTHOOK hideHook = SetWinEventHook(
-      EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE, NULL, WinEventHookProc, 0, 0,
-      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  const DWORD hookFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
 
-  HWINEVENTHOOK destroyHook = SetWinEventHook(
-      EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, NULL, WinEventHookProc, 0, 0,
-      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  HWINEVENTHOOK showHook =
+      SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr,
+                      WinEventHookProc, 0, 0, hookFlags);
 
-  HWINEVENTHOOK moveSizeStartHook = SetWinEventHook(
-      EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART, NULL,
-      WinEventHookProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  HWINEVENTHOOK hideHook =
+      SetWinEventHook(EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE, nullptr,
+                      WinEventHookProc, 0, 0, hookFlags);
 
-  HWINEVENTHOOK moveSizeEndHook = SetWinEventHook(
-      EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, NULL,
-      WinEventHookProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  HWINEVENTHOOK destroyHook =
+      SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr,
+                      WinEventHookProc, 0, 0, hookFlags);
+
+  HWINEVENTHOOK moveSizeStartHook =
+      SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
+
+  HWINEVENTHOOK moveSizeEndHook =
+      SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND,
+                      nullptr, WinEventHookProc, 0, 0, hookFlags);
 
   if (!showHook || !hideHook || !destroyHook || !moveSizeStartHook ||
       !moveSizeEndHook) {
@@ -204,8 +220,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   QueueRelayout();
 
   MSG msg;
-  while (GetMessage(&msg, NULL, 0, 0)) {
-    if (msg.message == WM_APP_RELAYOUT) {
+  while (GetMessage(&msg, nullptr, 0, 0)) {
+    if (msg.message == kMsgRelayout) {
       ProcessRelayout();
       continue;
     }

@@ -9,6 +9,9 @@ namespace {
 constexpr int kOuterGap = 10;
 constexpr int kInnerGap = 8;
 constexpr double kSplitRatio = 0.56;
+constexpr int kMinTileWidth = 80;
+constexpr int kMinTileHeight = 70;
+constexpr int kMinLeftoverArea = 20000;
 
 struct MonitorBucket {
   HMONITOR monitor;
@@ -77,7 +80,7 @@ void SplitVertical(const RECT& in, RECT& left, RECT& right) {
 
   int usable = std::max(1, totalW - kInnerGap);
   int leftW = static_cast<int>(usable * kSplitRatio);
-  int minW = std::max(80, usable / 4);
+  int minW = std::max(kMinTileWidth, usable / 4);
   if (leftW < minW) leftW = minW;
   if (leftW > usable - minW) leftW = usable - minW;
 
@@ -98,7 +101,7 @@ void SplitHorizontal(const RECT& in, RECT& top, RECT& bottom) {
 
   int usable = std::max(1, totalH - kInnerGap);
   int topH = static_cast<int>(usable * kSplitRatio);
-  int minH = std::max(70, usable / 4);
+  int minH = std::max(kMinTileHeight, usable / 4);
   if (topH < minH) topH = minH;
   if (topH > usable - minH) topH = usable - minH;
 
@@ -145,8 +148,8 @@ RECT ClampRectToArea(const RECT& r, const RECT& area) {
 
   int w = Width(out);
   int h = Height(out);
-  if (w < 80) w = 80;
-  if (h < 70) h = 70;
+  if (w < kMinTileWidth) w = kMinTileWidth;
+  if (h < kMinTileHeight) h = kMinTileHeight;
 
   if (w > Width(area)) w = Width(area);
   if (h > Height(area)) h = Height(area);
@@ -282,9 +285,7 @@ std::vector<WindowRect> calculateWindowResolutionWithAnchor(
     if (others.empty()) continue;
 
     RECT leftover = LargestRegionAroundAnchor(tiledArea, fixedAnchor);
-    if (Area(leftover) < 20000) {
-      // Fallback if anchor takes almost everything.
-      LayoutDwindleInArea(result, others, tiledArea);
+    if (Area(leftover) < kMinLeftoverArea) {
       continue;
     }
 
