@@ -17,4 +17,11 @@ using WindowFilterFn = bool (*)(HWND);
 
 std::vector<WindowRect> calculateWindowResolution(
     const std::vector<HWND>& windows);
-void RecalculateAndApplyLayout(WindowFilterFn filter);
+std::vector<WindowRect> calculateWindowResolutionWithAnchor(
+    const std::vector<HWND>& windows,
+    HWND anchorHwnd,
+    const RECT* anchorRect);
+
+void RecalculateAndApplyLayout(WindowFilterFn filter,
+                               HWND anchorHwnd = nullptr,
+                               const RECT* anchorRect = nullptr);

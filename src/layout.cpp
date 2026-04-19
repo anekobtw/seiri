@@ -25,6 +25,12 @@ bool g_isApplyingLayout = false;
 
 int Width(const RECT& r) { return r.right - r.left; }
 int Height(const RECT& r) { return r.bottom - r.top; }
+int Area(const RECT& r) {
+  int w = Width(r);
+  int h = Height(r);
+  if (w <= 0 || h <= 0) return 0;
+  return w * h;
+}
 
 RECT InsetRect(const RECT& r, int inset) {
   RECT out = r;
@@ -103,12 +109,11 @@ void SplitHorizontal(const RECT& in, RECT& top, RECT& bottom) {
   bottom.top = top.bottom + kInnerGap;
 }
 
-void LayoutDwindle(std::vector<WindowRect>& out,
-                   const std::vector<HWND>& windows,
-                   const RECT& monitorWorkArea) {
+void LayoutDwindleInArea(std::vector<WindowRect>& out,
+                         const std::vector<HWND>& windows, const RECT& area) {
   if (windows.empty()) return;
 
-  RECT remaining = InsetRect(monitorWorkArea, kOuterGap);
+  RECT remaining = area;
   int n = static_cast<int>(windows.size());
 
   if (n == 1) {
@@ -116,9 +121,6 @@ void LayoutDwindle(std::vector<WindowRect>& out,
     return;
   }
 
-  // Hyprland dwindle-like recursive split (spiral-ish alternating orientation).
-  // Exact 1:1 is compositor/tree-state dependent, but this mirrors behavior
-  // closely.
   bool splitVertical = Width(remaining) >= Height(remaining);
 
   for (int i = 0; i < n - 1; ++i) {
@@ -138,23 +140,67 @@ void LayoutDwindle(std::vector<WindowRect>& out,
   PushCell(out, windows[n - 1], remaining);
 }
 
-BOOL CALLBACK CollectWindowsProc(HWND hwnd, LPARAM lParam) {
-  auto* context = reinterpret_cast<EnumContext*>(lParam);
-  if (!context || !context->windows || !context->filter) return TRUE;
+RECT ClampRectToArea(const RECT& r, const RECT& area) {
+  RECT out = r;
 
-  if (context->filter(hwnd)) context->windows->push_back(hwnd);
+  int w = Width(out);
+  int h = Height(out);
+  if (w < 80) w = 80;
+  if (h < 70) h = 70;
 
-  return TRUE;
+  if (w > Width(area)) w = Width(area);
+  if (h > Height(area)) h = Height(area);
+
+  if (out.left < area.left) out.left = area.left;
+  if (out.top < area.top) out.top = area.top;
+
+  out.right = out.left + w;
+  out.bottom = out.top + h;
+
+  if (out.right > area.right) {
+    out.right = area.right;
+    out.left = out.right - w;
+  }
+
+  if (out.bottom > area.bottom) {
+    out.bottom = area.bottom;
+    out.top = out.bottom - h;
+  }
+
+  return out;
 }
 
-}  // namespace
+RECT LargestRegionAroundAnchor(const RECT& workArea, const RECT& anchor) {
+  RECT candidates[4] = {
+      {workArea.left, workArea.top, anchor.left - kInnerGap, workArea.bottom},
+      {anchor.right + kInnerGap, workArea.top, workArea.right, workArea.bottom},
+      {workArea.left, workArea.top, workArea.right, anchor.top - kInnerGap},
+      {workArea.left, anchor.bottom + kInnerGap, workArea.right,
+       workArea.bottom},
+  };
 
-std::vector<WindowRect> calculateWindowResolution(
-    const std::vector<HWND>& windows) {
-  std::vector<WindowRect> result;
-  if (windows.empty()) return result;
+  int bestIdx = -1;
+  int bestArea = -1;
+  for (int i = 0; i < 4; ++i) {
+    if (candidates[i].right < candidates[i].left)
+      candidates[i].right = candidates[i].left;
+    if (candidates[i].bottom < candidates[i].top)
+      candidates[i].bottom = candidates[i].top;
 
-  std::vector<MonitorBucket> buckets;
+    int a = Area(candidates[i]);
+    if (a > bestArea) {
+      bestArea = a;
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx < 0) return workArea;
+  return candidates[bestIdx];
+}
+
+void BuildMonitorBuckets(const std::vector<HWND>& windows,
+                         std::vector<MonitorBucket>& buckets) {
+  buckets.clear();
   buckets.reserve(4);
 
   for (HWND hwnd : windows) {
@@ -174,23 +220,82 @@ std::vector<WindowRect> calculateWindowResolution(
       it->windows.push_back(hwnd);
     }
   }
+}
+
+BOOL CALLBACK CollectWindowsProc(HWND hwnd, LPARAM lParam) {
+  auto* context = reinterpret_cast<EnumContext*>(lParam);
+  if (!context || !context->windows || !context->filter) return TRUE;
+
+  if (context->filter(hwnd)) context->windows->push_back(hwnd);
+
+  return TRUE;
+}
+
+}  // namespace
+
+std::vector<WindowRect> calculateWindowResolution(
+    const std::vector<HWND>& windows) {
+  return calculateWindowResolutionWithAnchor(windows, nullptr, nullptr);
+}
+
+std::vector<WindowRect> calculateWindowResolutionWithAnchor(
+    const std::vector<HWND>& windows, HWND anchorHwnd, const RECT* anchorRect) {
+  std::vector<WindowRect> result;
+  if (windows.empty()) return result;
+
+  std::vector<MonitorBucket> buckets;
+  BuildMonitorBuckets(windows, buckets);
 
   HWND foreground = GetForegroundWindow();
+  const bool hasAnchor = anchorHwnd && anchorRect && IsWindow(anchorHwnd);
 
   for (auto& bucket : buckets) {
-    auto it =
+    auto focusIt =
         std::find(bucket.windows.begin(), bucket.windows.end(), foreground);
-    if (it != bucket.windows.end() && it != bucket.windows.begin()) {
-      std::rotate(bucket.windows.begin(), it, it + 1);
+    if (focusIt != bucket.windows.end() && focusIt != bucket.windows.begin()) {
+      std::rotate(bucket.windows.begin(), focusIt, focusIt + 1);
     }
 
-    LayoutDwindle(result, bucket.windows, bucket.workArea);
+    RECT tiledArea = InsetRect(bucket.workArea, kOuterGap);
+
+    if (!hasAnchor) {
+      LayoutDwindleInArea(result, bucket.windows, tiledArea);
+      continue;
+    }
+
+    auto anchorIt =
+        std::find(bucket.windows.begin(), bucket.windows.end(), anchorHwnd);
+    if (anchorIt == bucket.windows.end()) {
+      LayoutDwindleInArea(result, bucket.windows, tiledArea);
+      continue;
+    }
+
+    RECT fixedAnchor = ClampRectToArea(*anchorRect, tiledArea);
+    PushCell(result, anchorHwnd, fixedAnchor);
+
+    std::vector<HWND> others;
+    others.reserve(bucket.windows.size());
+    for (HWND w : bucket.windows) {
+      if (w != anchorHwnd) others.push_back(w);
+    }
+
+    if (others.empty()) continue;
+
+    RECT leftover = LargestRegionAroundAnchor(tiledArea, fixedAnchor);
+    if (Area(leftover) < 20000) {
+      // Fallback if anchor takes almost everything.
+      LayoutDwindleInArea(result, others, tiledArea);
+      continue;
+    }
+
+    LayoutDwindleInArea(result, others, leftover);
   }
 
   return result;
 }
 
-void RecalculateAndApplyLayout(WindowFilterFn filter) {
+void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
+                               const RECT* anchorRect) {
   if (!filter || g_isApplyingLayout) return;
 
   g_isApplyingLayout = true;
@@ -199,7 +304,8 @@ void RecalculateAndApplyLayout(WindowFilterFn filter) {
   EnumContext context{&windows, filter};
   EnumWindows(CollectWindowsProc, reinterpret_cast<LPARAM>(&context));
 
-  auto layout = calculateWindowResolution(windows);
+  auto layout =
+      calculateWindowResolutionWithAnchor(windows, anchorHwnd, anchorRect);
 
   int moved = 0;
   for (const auto& item : layout) {
@@ -207,7 +313,6 @@ void RecalculateAndApplyLayout(WindowFilterFn filter) {
 
     RECT current{};
     if (!GetWindowRect(item.hwnd, &current)) continue;
-
     if (EqualRect(&current, &item.rect)) continue;
 
     int width = item.rect.right - item.rect.left;
