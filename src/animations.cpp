@@ -1,5 +1,9 @@
 #include "animations.h"
+
+#include <algorithm>
 #include <unordered_map>
+
+#include "window_manager.h"
 
 namespace {
 
@@ -14,8 +18,10 @@ std::unordered_map<HWND, unsigned long long> g_tokens;
 
 void InitLock() {
   static bool initialized = false;
-  if (!initialized)
-    InitializeCriticalSection(&g_lock), initialized = true;
+  if (!initialized) {
+    InitializeCriticalSection(&g_lock);
+    initialized = true;
+  }
 }
 
 unsigned long long NextToken(HWND hwnd) {
@@ -40,13 +46,13 @@ double EaseInOutCubic(double t) {
   t = Clamp01(t);
   if (t < 0.5)
     return 4.0 * t * t * t;
-  double f = -2.0 * t + 2.0;
+  const double f = -2.0 * t + 2.0;
   return 1.0 - (f * f * f) / 2.0;
 }
 
 int LerpInt(int a, int b, double t) { return static_cast<int>(a + (b - a) * t); }
 
-bool GetNowMs(double &outMs, const LARGE_INTEGER &freq) {
+bool GetNowMs(double& outMs, const LARGE_INTEGER& freq) {
   LARGE_INTEGER now{};
   if (!QueryPerformanceCounter(&now) || freq.QuadPart == 0)
     return false;
@@ -55,7 +61,7 @@ bool GetNowMs(double &outMs, const LARGE_INTEGER &freq) {
 }
 
 DWORD WINAPI AnimationThreadProc(LPVOID param) {
-  auto *req = reinterpret_cast<AnimationRequest *>(param);
+  auto* req = reinterpret_cast<AnimationRequest*>(param);
   if (!req)
     return 0;
 
@@ -88,13 +94,10 @@ DWORD WINAPI AnimationThreadProc(LPVOID param) {
     if (!GetNowMs(nowMs, freq))
       break;
 
-    double t = (nowMs - startMs) / static_cast<double>(req->durationMs);
-    double eased = EaseInOutCubic(t);
+    const double t = (nowMs - startMs) / static_cast<double>(req->durationMs);
+    const double eased = EaseInOutCubic(t);
 
-    SetWindowPos(req->hwnd, nullptr,
-                 LerpInt(req->fromX, req->toX, eased), LerpInt(req->fromY, req->toY, eased),
-                 LerpInt(req->fromW, req->toW, eased), LerpInt(req->fromH, req->toH, eased),
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+    SetWindowPos(req->hwnd, nullptr, LerpInt(req->fromX, req->toX, eased), LerpInt(req->fromY, req->toY, eased), LerpInt(req->fromW, req->toW, eased), LerpInt(req->fromH, req->toH, eased), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
 
     if (t >= 1.0)
       break;
@@ -108,7 +111,7 @@ DWORD WINAPI AnimationThreadProc(LPVOID param) {
   return 0;
 }
 
-void StartAnimation(const AnimationRequest &request) {
+void StartAnimation(const AnimationRequest& request) {
   HANDLE thread = CreateThread(nullptr, 0, AnimationThreadProc, new AnimationRequest(request), 0, nullptr);
   if (thread)
     CloseHandle(thread);
@@ -119,6 +122,7 @@ void StartAnimation(const AnimationRequest &request) {
 void AnimateWindowTransform(HWND hwnd, int x, int y, int width, int height, int durationMs) {
   if (!hwnd || !IsWindow(hwnd))
     return;
+
   RECT rect{};
   GetWindowRect(hwnd, &rect);
   StartAnimation({hwnd, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, x, y, width, height, durationMs, NextToken(hwnd)});
@@ -127,6 +131,7 @@ void AnimateWindowTransform(HWND hwnd, int x, int y, int width, int height, int 
 void AnimateWindowMove(HWND hwnd, int x, int y, int durationMs) {
   if (!hwnd || !IsWindow(hwnd))
     return;
+
   RECT rect{};
   GetWindowRect(hwnd, &rect);
   AnimateWindowTransform(hwnd, x, y, rect.right - rect.left, rect.bottom - rect.top, durationMs);
@@ -135,7 +140,37 @@ void AnimateWindowMove(HWND hwnd, int x, int y, int durationMs) {
 void AnimateWindowResize(HWND hwnd, int width, int height, int durationMs) {
   if (!hwnd || !IsWindow(hwnd))
     return;
+
   RECT rect{};
   GetWindowRect(hwnd, &rect);
   AnimateWindowTransform(hwnd, rect.left, rect.top, width, height, durationMs);
+}
+
+bool HandleAnimationTimerMessage(AppState& state, const MSG& msg) {
+  if (msg.message != WM_TIMER || msg.wParam != kOpenWindowTimerId)
+    return false;
+
+  KillTimer(nullptr, kOpenWindowTimerId);
+
+  if (!state.pendingOpenHwnd || !state.hasPendingOpenTargetRect || !IsWindow(state.pendingOpenHwnd) || !IsWMWindow(state.pendingOpenHwnd)) {
+    state.pendingOpenHwnd = nullptr;
+    state.hasPendingOpenTargetRect = false;
+    return true;
+  }
+
+  const int targetW = state.pendingOpenTargetRect.right - state.pendingOpenTargetRect.left;
+  const int targetH = state.pendingOpenTargetRect.bottom - state.pendingOpenTargetRect.top;
+  const int startW = std::max(120, (targetW * 65) / 100);
+  const int startH = std::max(90, (targetH * 65) / 100);
+  const int centerX = state.pendingOpenTargetRect.left + targetW / 2;
+  const int centerY = state.pendingOpenTargetRect.top + targetH / 2;
+  const int startX = centerX - startW / 2;
+  const int startY = centerY - startH / 2;
+
+  SetWindowPos(state.pendingOpenHwnd, nullptr, startX, startY, startW, startH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  AnimateWindowTransform(state.pendingOpenHwnd, state.pendingOpenTargetRect.left, state.pendingOpenTargetRect.top, targetW, targetH, kOpenWindowAnimationMs);
+
+  state.pendingOpenHwnd = nullptr;
+  state.hasPendingOpenTargetRect = false;
+  return true;
 }

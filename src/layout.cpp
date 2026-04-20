@@ -284,9 +284,7 @@ void RecalculateAndApplyLayout(WindowFilterFn filter, HWND anchorHwnd,
       continue;
     }
 
-    if (SetWindowPos(item.hwnd, nullptr, item.rect.left, item.rect.top, width,
-                     height,
-                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING)) {
+    if (SetWindowPos(item.hwnd, nullptr, item.rect.left, item.rect.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING)) {
       ++movedCount;
     }
   }

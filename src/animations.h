@@ -16,4 +16,8 @@ void AnimateWindowResize(HWND hwnd, int width, int height, int durationMs);
 
 #ifdef __cplusplus
 }
+
+#include "state.h"
+
+bool HandleAnimationTimerMessage(AppState& state, const MSG& msg);
 #endif

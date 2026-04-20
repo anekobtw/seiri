@@ -11,13 +11,13 @@ Compile directly from source.
 ### MinGW-w64 (g++)
 
 ```bash
-g++ -std=c++17 -O2 -mwindows src/main.cpp src/window_manager.cpp src/hooks.cpp src/layout_controller.cpp src/animation_controller.cpp src/layout.cpp src/animations.cpp src/alt-maxmin.cpp -o seiri.exe -luser32 -lgdi32
+g++ -std=c++17 -O2 -mwindows src/main.cpp src/window_manager.cpp src/hooks.cpp src/layout_controller.cpp src/layout.cpp src/animations.cpp src/alt-maxmin.cpp -o seiri.exe -luser32 -lgdi32
 ```
 
 ### MSVC (Developer Command Prompt)
 
 ```bat
-cl /std:c++17 /EHsc /O2 /DNOMINMAX /DWIN32_LEAN_AND_MEAN src\main.cpp src\window_manager.cpp src\hooks.cpp src\layout_controller.cpp src\animation_controller.cpp src\layout.cpp src\animations.cpp src\alt-maxmin.cpp /link user32.lib gdi32.lib
+cl /std:c++17 /EHsc /O2 /DNOMINMAX /DWIN32_LEAN_AND_MEAN src\main.cpp src\window_manager.cpp src\hooks.cpp src\layout_controller.cpp src\layout.cpp src\animations.cpp src\alt-maxmin.cpp /link user32.lib gdi32.lib
 ```
 
 ## Run

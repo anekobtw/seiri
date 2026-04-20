@@ -1,7 +1,7 @@
 #include <windows.h>
 
 #include "alt-maxmin.h"
-#include "animation_controller.h"
+#include "animations.h"
 #include "hooks.h"
 #include "layout_controller.h"
 #include "state.h"
