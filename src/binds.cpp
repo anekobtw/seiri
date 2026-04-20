@@ -10,6 +10,7 @@ BindsWindowFilterFn g_filter = nullptr;
 AppState *g_state = nullptr;
 UINT g_superKey = VK_MENU;
 bool g_superFDown = false;
+bool g_superQDown = false;
 
 HWND GetManagedForegroundRoot() {
   const HWND root = GetAncestor(GetForegroundWindow(), GA_ROOT);
@@ -34,6 +35,13 @@ void ToggleFullscreenTileForForeground() {
   QueueRelayout(*g_state);
 }
 
+void CloseForegroundWindowSafely() {
+  const HWND root = GetManagedForegroundRoot();
+  if (!root)
+    return;
+  PostMessage(root, WM_CLOSE, 0, 0);
+}
+
 bool IsAltVirtualKey(UINT vk) {
   return vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU;
 }
@@ -50,6 +58,7 @@ LRESULT CALLBACK KeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
   if (code >= 0) {
     auto *keyEvent = reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam);
     const bool isFKey = keyEvent->vkCode == 'F';
+    const bool isQKey = keyEvent->vkCode == 'Q';
     const bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
     const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
 
@@ -61,8 +70,18 @@ LRESULT CALLBACK KeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
       return 1;
     }
 
+    if (isQKey && isDown && IsSuperPressed(keyEvent)) {
+      if (!g_superQDown) {
+        g_superQDown = true;
+        CloseForegroundWindowSafely();
+      }
+      return 1;
+    }
+
     if (isFKey && isUp)
       g_superFDown = false;
+    if (isQKey && isUp)
+      g_superQDown = false;
   }
 
   return CallNextHookEx(g_hook, code, wParam, lParam);
@@ -73,6 +92,7 @@ void ResetState() {
   g_state = nullptr;
   g_superKey = VK_MENU;
   g_superFDown = false;
+  g_superQDown = false;
 }
 
 } // namespace
