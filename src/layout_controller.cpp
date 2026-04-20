@@ -5,15 +5,56 @@
 #include "layout.h"
 #include "window_manager.h"
 
-void QueueRelayout(AppState& state) {
+namespace {
+
+void ValidateAnchor(AppState &state) {
+  if (!state.hasAnchorRect)
+    return;
+
+  if (!state.anchorHwnd || !IsWindow(state.anchorHwnd) || !IsWMWindow(state.anchorHwnd)) {
+    ClearAnchor(state);
+  }
+}
+
+HWND GetAnchorWindow(const AppState &state) {
+  return state.hasAnchorRect ? state.anchorHwnd : nullptr;
+}
+
+const RECT *GetAnchorRect(const AppState &state) {
+  return state.hasAnchorRect ? &state.anchorRect : nullptr;
+}
+
+bool TryHandlePendingOpen(AppState &state, HWND anchorWindow, const RECT *anchorRect) {
+  if (!(state.pendingOpenStage && state.pendingOpenHwnd && state.managedWindows.count(state.pendingOpenHwnd))) {
+    return false;
+  }
+
+  RECT target{};
+  RecalculateAndApplyLayout(IsWMWindow, anchorWindow, anchorRect, kLayoutAnimationMs, state.pendingOpenHwnd, &target);
+
+  state.pendingOpenTargetRect = target;
+  state.hasPendingOpenTargetRect = true;
+  state.pendingOpenStage = false;
+
+  if (state.hasAnchorRect)
+    ClearAnchor(state);
+
+  SetTimer(nullptr, kOpenWindowTimerId, kLayoutAnimationMs, nullptr);
+  return true;
+}
+
+} // namespace
+
+void QueueRelayout(AppState &state) {
   if (state.isRelayoutQueued)
     return;
+
   state.isRelayoutQueued = true;
   if (!PostThreadMessage(GetCurrentThreadId(), kRelayoutMessage, 0, 0))
     state.isRelayoutQueued = false;
 }
 
-bool HandleRelayoutMessage(AppState& state) {
+bool HandleRelayoutMessage(AppState &state) {
   state.isRelayoutQueued = false;
 
   if (state.isMoveSizeActive)
@@ -22,42 +63,27 @@ bool HandleRelayoutMessage(AppState& state) {
   const DWORD now = GetTickCount();
   if ((now - state.lastRelayoutTick) < kRelayoutDebounceMs)
     return true;
-  state.lastRelayoutTick = now;
 
+  state.lastRelayoutTick = now;
   ApplyLayout(state);
   return true;
 }
 
-void ApplyLayout(AppState& state) {
-  if (state.hasAnchorRect && (!state.anchorHwnd || !IsWindow(state.anchorHwnd) || !IsWMWindow(state.anchorHwnd)))
-    ClearAnchor(state);
+void ApplyLayout(AppState &state) {
+  ValidateAnchor(state);
 
-  // Update managed windows
   std::unordered_set<HWND> next;
   CollectManagedWindows(next);
   state.managedWindows.swap(next);
 
-  // Handle pending window
-  if (state.pendingOpenStage && state.pendingOpenHwnd && state.managedWindows.count(state.pendingOpenHwnd)) {
-    RECT target{};
-    RecalculateAndApplyLayout(IsWMWindow,
-                              state.hasAnchorRect ? state.anchorHwnd : nullptr,
-                              state.hasAnchorRect ? &state.anchorRect : nullptr,
-                              kLayoutAnimationMs, state.pendingOpenHwnd, &target);
-    state.pendingOpenTargetRect = target;
-    state.hasPendingOpenTargetRect = true;
-    state.pendingOpenStage = false;
-    if (state.hasAnchorRect)
-      ClearAnchor(state);
-    SetTimer(nullptr, kOpenWindowTimerId, kLayoutAnimationMs, nullptr);
-    return;
-  }
+  const HWND anchorWindow = GetAnchorWindow(state);
+  const RECT *anchorRect = GetAnchorRect(state);
 
-  // Regular layout
-  RecalculateAndApplyLayout(IsWMWindow,
-                            state.hasAnchorRect ? state.anchorHwnd : nullptr,
-                            state.hasAnchorRect ? &state.anchorRect : nullptr,
-                            kLayoutAnimationMs);
+  if (TryHandlePendingOpen(state, anchorWindow, anchorRect))
+    return;
+
+  RecalculateAndApplyLayout(IsWMWindow, anchorWindow, anchorRect, kLayoutAnimationMs);
+
   if (state.hasAnchorRect)
     ClearAnchor(state);
 }

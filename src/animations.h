@@ -10,8 +10,7 @@
 extern "C" {
 #endif
 
-void AnimateWindowTransform(HWND hwnd, int x, int y, int width, int height,
-                            int durationMs);
+void AnimateWindowTransform(HWND hwnd, int x, int y, int width, int height, int durationMs);
 void AnimateWindowMove(HWND hwnd, int x, int y, int durationMs);
 void AnimateWindowResize(HWND hwnd, int width, int height, int durationMs);
 

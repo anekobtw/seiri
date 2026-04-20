@@ -1,9 +1,5 @@
 #pragma once
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <windows.h>
 
 struct AppState;
@@ -19,8 +15,6 @@ struct HookSet {
   HWINEVENTHOOK stateChange = nullptr;
 };
 
-bool InstallHooks(DWORD hookFlags, HookSet* out, AppState* state);
-void UnhookAll(const HookSet& hooks);
-
-void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD,
-                               DWORD);
+bool InstallHooks(DWORD hookFlags, HookSet *out, AppState *state);
+void UnhookAll(const HookSet &hooks);
+void CALLBACK WinEventHookProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD);

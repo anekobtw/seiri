@@ -15,12 +15,9 @@ constexpr int kOpenWindowAnimationMs = 180;
 constexpr UINT_PTR kOpenWindowTimerId = 1;
 
 struct AppState {
-  // layout
   bool isRelayoutQueued = false;
   DWORD lastRelayoutTick = 0;
   bool isMoveSizeActive = false;
-  
-  // hooks
   HWND moveSizeHwnd = nullptr;
   std::unordered_set<HWND> managedWindows;
   HWND anchorHwnd = nullptr;
