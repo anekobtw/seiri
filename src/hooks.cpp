@@ -88,6 +88,8 @@ void HandleWinEvent(AppState &state, DWORD event, HWND hwnd, LONG idObject, LONG
       state.hasPendingOpenTargetRect = false;
       KillTimer(nullptr, kOpenWindowTimerId);
     }
+    if (hwnd == state.fullscreenHwnd)
+      state.fullscreenHwnd = nullptr;
 
     if (state.managedWindows.erase(hwnd) > 0)
       QueueRelayout(state);

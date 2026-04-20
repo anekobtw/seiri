@@ -19,11 +19,12 @@ std::vector<WindowRect> calculateWindowResolution(
     const std::vector<HWND>& windows);
 std::vector<WindowRect> calculateWindowResolutionWithAnchor(
     const std::vector<HWND>& windows, HWND anchorWindow,
-    const RECT* anchorRect);
+    const RECT* anchorRect, HWND fullscreenWindow = nullptr);
 
 void RecalculateAndApplyLayout(WindowFilterFn filter,
                                HWND anchorWindow = nullptr,
                                const RECT* anchorRect = nullptr,
                                int animationDurationMs = 0,
                                HWND skipApplyWindow = nullptr,
-                               RECT* skippedTargetRect = nullptr);
+                               RECT* skippedTargetRect = nullptr,
+                               HWND fullscreenWindow = nullptr);

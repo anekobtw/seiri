@@ -1,7 +1,7 @@
 #include <windows.h>
 
-#include "alt-maxmin.h"
 #include "animations.h"
+#include "binds.h"
 #include "hooks.h"
 #include "layout_controller.h"
 #include "state.h"
@@ -15,11 +15,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   CollectManagedWindows(appState.managedWindows);
 
   HookSet hooks{};
-  if (!InstallHooks(WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS, &hooks,
-                    &appState))
+  if (!InstallHooks(WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS, &hooks, &appState))
     return 1;
 
-  if (!InstallAltMaxMinHook(IsWMWindow)) {
+  if (!InstallBindsHook(IsWMWindow, appState.superKey, &appState)) {
     UnhookAll(hooks);
     return 1;
   }
@@ -40,7 +39,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     DispatchMessage(&msg);
   }
 
-  UninstallAltMaxMinHook();
+  UninstallBindsHook();
   UnhookAll(hooks);
   return 0;
 }
